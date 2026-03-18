@@ -72,7 +72,9 @@ class Florence2PantryDataset(Dataset):
 
     def __getitem__(self, idx):
         sample = self.samples[idx]
-        img_path = os.path.join(self.data_dir, sample["image"])
+        # Normalize path separators (JSONL may contain Windows backslashes)
+        img_rel = sample["image"].replace("\\", "/")
+        img_path = os.path.join(self.data_dir, img_rel)
         
         try:
             image = Image.open(img_path).convert("RGB")
@@ -500,7 +502,7 @@ def main():
     with open(test_jsonl, "r") as f:
         test_sample = json.loads(f.readline())
 
-    test_img = os.path.join(args.data_dir, test_sample["image"])
+    test_img = os.path.join(args.data_dir, test_sample["image"].replace("\\", "/"))
     if os.path.exists(test_img):
         result = run_inference_sample(model, processor, test_img, device)
         print(f"  Image: {test_sample['image']}")
