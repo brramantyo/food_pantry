@@ -1,0 +1,204 @@
+{
+  "categories": [
+    {
+      "class_name": "Baby Food",
+      "category_group": "Infant/Toddler Foods",
+      "typical_package_types": ["jar", "pouch", "box"],
+      "usda_search_terms": ["baby food, fruit", "baby food, vegetable", "baby food, cereal", "infant formula, powder", "baby food, meat"],
+      "usda_food_group": "Baby Foods",
+      "notes": "Includes purees, cereals, formula, and toddler snacks"
+    },
+    {
+      "class_name": "Beans and Legumes - Canned or Dried",
+      "category_group": "Protein/Legumes",
+      "typical_package_types": ["can", "bag", "box"],
+      "usda_search_terms": ["beans, canned", "lentils, dried", "chickpeas, canned", "black beans, canned", "kidney beans, canned"],
+      "usda_food_group": "Legumes and Legume Products",
+      "notes": "Includes both canned and dried variants such as lentils, chickpeas, black beans, kidney beans, and pinto beans"
+    },
+    {
+      "class_name": "Bread and Bakery Products",
+      "category_group": "Grains/Baked Goods",
+      "typical_package_types": ["bag", "box", "wrapper"],
+      "usda_search_terms": ["bread, white", "bread, whole wheat", "tortillas, flour", "bagels, plain", "english muffins"],
+      "usda_food_group": "Baked Products",
+      "notes": "Covers sliced bread, rolls, tortillas, bagels, muffins, and other bakery items"
+    },
+    {
+      "class_name": "Canned Tomato Products",
+      "category_group": "Vegetables/Canned",
+      "typical_package_types": ["can", "jar", "carton"],
+      "usda_search_terms": ["tomatoes, canned, diced", "tomato sauce, canned", "tomato paste, canned", "tomatoes, crushed, canned", "tomato puree, canned"],
+      "usda_food_group": "Vegetables and Vegetable Products",
+      "notes": "Includes diced tomatoes, tomato sauce, tomato paste, crushed tomatoes, and stewed tomatoes"
+    },
+    {
+      "class_name": "Carbohydrate Meal",
+      "category_group": "Grains/Starches",
+      "typical_package_types": ["box", "bag", "pouch"],
+      "usda_search_terms": ["rice, white, long-grain", "pasta, dry", "macaroni, dry", "noodles, egg", "rice, brown"],
+      "usda_food_group": "Cereal Grains and Pasta",
+      "notes": "Dry pasta, rice, noodles, couscous, and other starch-based meal components"
+    },
+    {
+      "class_name": "Carton of Eggs",
+      "category_group": "Protein/Eggs",
+      "typical_package_types": ["carton"],
+      "usda_search_terms": ["egg, whole, raw", "egg, large, grade A", "eggs, scrambled", "egg whites, raw"],
+      "usda_food_group": "Dairy and Egg Products",
+      "notes": "Typically sold in cartons of 6, 12, or 18; includes white and brown eggs"
+    },
+    {
+      "class_name": "Condiments and Sauces",
+      "category_group": "Condiments/Sauces",
+      "typical_package_types": ["bottle", "jar", "packet", "squeeze bottle"],
+      "usda_search_terms": ["ketchup", "mustard, prepared, yellow", "mayonnaise", "soy sauce", "hot sauce"],
+      "usda_food_group": "Soups, Sauces, and Gravies",
+      "notes": "Includes ketchup, mustard, mayo, soy sauce, hot sauce, BBQ sauce, salad dressings, and similar"
+    },
+    {
+      "class_name": "Dairy and Dairy Alternatives",
+      "category_group": "Dairy/Alternatives",
+      "typical_package_types": ["carton", "bottle", "tub", "bag"],
+      "usda_search_terms": ["milk, whole", "cheese, cheddar", "yogurt, plain", "butter, salted", "almond milk, unsweetened"],
+      "usda_food_group": "Dairy and Egg Products",
+      "notes": "Covers milk, cheese, yogurt, butter, cream, and plant-based alternatives like almond/oat/soy milk"
+    },
+    {
+      "class_name": "Desserts and Sweets",
+      "category_group": "Sweets/Desserts",
+      "typical_package_types": ["box", "bag", "wrapper", "tub"],
+      "usda_search_terms": ["cookies, chocolate chip", "cake mix, dry", "candy, chocolate", "ice cream, vanilla", "pudding, chocolate, ready-to-eat"],
+      "usda_food_group": "Sweets",
+      "notes": "Includes cookies, cakes, candy, chocolate, ice cream, pudding, and baking mixes"
+    },
+    {
+      "class_name": "Drinks",
+      "category_group": "Beverages",
+      "typical_package_types": ["bottle", "can", "carton", "box"],
+      "usda_search_terms": ["juice, orange", "soft drink, cola", "water, bottled", "coffee, brewed", "tea, brewed"],
+      "usda_food_group": "Beverages",
+      "notes": "Includes juice, soda, water, coffee, tea, sports drinks, and other beverages"
+    },
+    {
+      "class_name": "Fresh Fruit",
+      "category_group": "Fruits/Fresh",
+      "typical_package_types": ["loose", "bag", "clamshell", "punnet"],
+      "usda_search_terms": ["apples, raw", "bananas, raw", "oranges, raw", "strawberries, raw", "grapes, raw"],
+      "usda_food_group": "Fruits and Fruit Juices",
+      "notes": "Unprocessed whole fruits; typically sold loose or in bags/containers"
+    },
+    {
+      "class_name": "Frozen Mix Vegetable",
+      "category_group": "Vegetables/Frozen",
+      "typical_package_types": ["bag", "box"],
+      "usda_search_terms": ["vegetables, mixed, frozen", "peas, green, frozen", "corn, sweet, frozen", "broccoli, frozen", "spinach, frozen"],
+      "usda_food_group": "Vegetables and Vegetable Products",
+      "notes": "Frozen vegetable blends and single-variety frozen vegetables"
+    },
+    {
+      "class_name": "Fruits - Canned or Processed",
+      "category_group": "Fruits/Processed",
+      "typical_package_types": ["can", "jar", "cup"],
+      "usda_search_terms": ["peaches, canned, in juice", "fruit cocktail, canned", "pineapple, canned", "applesauce, unsweetened", "mandarin oranges, canned"],
+      "usda_food_group": "Fruits and Fruit Juices",
+      "notes": "Canned fruits in syrup or juice, applesauce, fruit cups, and other shelf-stable processed fruits"
+    },
+    {
+      "class_name": "Granola Products",
+      "category_group": "Grains/Breakfast",
+      "typical_package_types": ["box", "bag", "wrapper"],
+      "usda_search_terms": ["granola, plain", "granola bar, oat", "cereal, oats", "muesli", "oats, rolled, dry"],
+      "usda_food_group": "Breakfast Cereals",
+      "notes": "Granola, granola bars, muesli, oats, and similar oat-based breakfast/snack products"
+    },
+    {
+      "class_name": "Meat and Poultry - Canned",
+      "category_group": "Protein/Canned Meat",
+      "typical_package_types": ["can", "pouch"],
+      "usda_search_terms": ["chicken, canned, drained", "tuna, canned (use Seafood)", "spam, canned", "corned beef, canned", "vienna sausage, canned"],
+      "usda_food_group": "Sausages and Luncheon Meats",
+      "notes": "Canned chicken, spam, corned beef, vienna sausages, and other shelf-stable canned meats"
+    },
+    {
+      "class_name": "Meat and Poultry - Fresh",
+      "category_group": "Protein/Fresh Meat",
+      "typical_package_types": ["tray", "vacuum pack", "wrapper"],
+      "usda_search_terms": ["chicken breast, raw", "ground beef, raw, 80% lean", "pork chops, raw", "turkey, ground, raw", "beef, steak, raw"],
+      "usda_food_group": "Poultry Products",
+      "notes": "Fresh/raw meats including chicken, beef, pork, turkey, and other unprocessed meats"
+    },
+    {
+      "class_name": "Nut Butters and Nuts",
+      "category_group": "Protein/Nuts",
+      "typical_package_types": ["jar", "bag", "can", "pouch"],
+      "usda_search_terms": ["peanut butter, smooth", "almonds, raw", "cashews, roasted", "almond butter", "mixed nuts, roasted"],
+      "usda_food_group": "Nut and Seed Products",
+      "notes": "Includes peanut butter, almond butter, whole nuts, mixed nuts, and seeds"
+    },
+    {
+      "class_name": "Oil",
+      "category_group": "Fats/Oils",
+      "typical_package_types": ["bottle", "can", "spray can"],
+      "usda_search_terms": ["olive oil", "vegetable oil, canola", "coconut oil", "cooking spray, vegetable oil", "sesame oil"],
+      "usda_food_group": "Fats and Oils",
+      "notes": "Cooking oils including olive, canola, vegetable, coconut, and specialty oils"
+    },
+    {
+      "class_name": "Ready Meals",
+      "category_group": "Prepared/Convenience Foods",
+      "typical_package_types": ["box", "tray", "bag", "can"],
+      "usda_search_terms": ["frozen dinner, chicken", "macaroni and cheese, frozen", "burrito, frozen", "pizza, frozen", "soup, ready-to-serve"],
+      "usda_food_group": "Meals, Entrees, and Side Dishes",
+      "notes": "Pre-prepared frozen dinners, microwave meals, meal kits, and heat-and-eat products"
+    },
+    {
+      "class_name": "Savory Snacks and Crackers",
+      "category_group": "Snacks",
+      "typical_package_types": ["bag", "box", "tube", "wrapper"],
+      "usda_search_terms": ["potato chips, plain", "crackers, saltine", "pretzels, hard", "popcorn, microwave", "tortilla chips"],
+      "usda_food_group": "Snacks",
+      "notes": "Chips, crackers, pretzels, popcorn, rice cakes, and other savory snack foods"
+    },
+    {
+      "class_name": "Seafood - Canned",
+      "category_group": "Protein/Canned Seafood",
+      "typical_package_types": ["can", "pouch"],
+      "usda_search_terms": ["tuna, canned, in water", "salmon, canned", "sardines, canned, in oil", "anchovies, canned", "crab meat, canned"],
+      "usda_food_group": "Finfish and Shellfish Products",
+      "notes": "Canned tuna, salmon, sardines, anchovies, and other shelf-stable seafood"
+    },
+    {
+      "class_name": "Soup",
+      "category_group": "Soups/Stews",
+      "typical_package_types": ["can", "carton", "pouch", "cup"],
+      "usda_search_terms": ["soup, chicken noodle, canned", "soup, tomato, canned", "soup, cream of mushroom, canned", "broth, chicken, ready-to-serve", "soup, vegetable, canned"],
+      "usda_food_group": "Soups, Sauces, and Gravies",
+      "notes": "Canned soups, boxed broths, dry soup mixes, and ready-to-serve soups"
+    },
+    {
+      "class_name": "Spices Seasonings and Mixes",
+      "category_group": "Spices/Seasonings",
+      "typical_package_types": ["jar", "packet", "bag", "shaker"],
+      "usda_search_terms": ["salt, table", "pepper, black, ground", "garlic powder", "cinnamon, ground", "chili powder"],
+      "usda_food_group": "Spices and Herbs",
+      "notes": "Individual spices, seasoning blends, dry rubs, and baking mixes like taco seasoning or ranch mix"
+    },
+    {
+      "class_name": "Vegetables - Canned",
+      "category_group": "Vegetables/Canned",
+      "typical_package_types": ["can", "jar"],
+      "usda_search_terms": ["corn, sweet, canned", "green beans, canned", "peas, green, canned", "carrots, canned", "beets, canned"],
+      "usda_food_group": "Vegetables and Vegetable Products",
+      "notes": "Canned single-variety vegetables; excludes tomato products (separate category)"
+    },
+    {
+      "class_name": "Vegetables - Fresh",
+      "category_group": "Vegetables/Fresh",
+      "typical_package_types": ["loose", "bag", "bunch", "clamshell"],
+      "usda_search_terms": ["broccoli, raw", "carrots, raw", "lettuce, romaine, raw", "onions, raw", "bell peppers, raw"],
+      "usda_food_group": "Vegetables and Vegetable Products",
+      "notes": "Unprocessed whole vegetables; typically sold loose, in bags, or bunches"
+    }
+  ]
+}
