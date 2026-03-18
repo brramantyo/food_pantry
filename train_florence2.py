@@ -172,7 +172,7 @@ def train_one_epoch(model, dataloader, optimizer, scheduler, device, epoch, tota
 
 
 @torch.no_grad()
-def evaluate(model, dataloader, device):
+def evaluate(model, dataloader, device, amp_dtype=None):
     """Evaluate on validation set and return average loss."""
     model.eval()
     total_loss = 0.0
@@ -183,11 +183,19 @@ def evaluate(model, dataloader, device):
         pixel_values = batch["pixel_values"].to(device)
         labels = batch["labels"].to(device)
 
-        outputs = model(
-            input_ids=input_ids,
-            pixel_values=pixel_values,
-            labels=labels,
-        )
+        if amp_dtype is not None:
+            with torch.amp.autocast("cuda", dtype=amp_dtype):
+                outputs = model(
+                    input_ids=input_ids,
+                    pixel_values=pixel_values,
+                    labels=labels,
+                )
+        else:
+            outputs = model(
+                input_ids=input_ids,
+                pixel_values=pixel_values,
+                labels=labels,
+            )
 
         total_loss += outputs.loss.item()
 
@@ -195,18 +203,28 @@ def evaluate(model, dataloader, device):
 
 
 @torch.no_grad()
-def run_inference_sample(model, processor, image_path, device, prompt="<STRUCTURED_PANTRY_OUTPUT>"):
+def run_inference_sample(model, processor, image_path, device, prompt="<STRUCTURED_PANTRY_OUTPUT>", amp_dtype=None):
     """Run inference on a single image and print the result."""
     image = Image.open(image_path).convert("RGB")
     inputs = processor(text=prompt, images=image, return_tensors="pt").to(device)
 
-    generated_ids = model.generate(
-        input_ids=inputs["input_ids"],
-        pixel_values=inputs["pixel_values"],
-        max_new_tokens=1024,
-        num_beams=3,
-        early_stopping=True,
-    )
+    if amp_dtype is not None:
+        with torch.amp.autocast("cuda", dtype=amp_dtype):
+            generated_ids = model.generate(
+                input_ids=inputs["input_ids"],
+                pixel_values=inputs["pixel_values"],
+                max_new_tokens=1024,
+                num_beams=3,
+                early_stopping=True,
+            )
+    else:
+        generated_ids = model.generate(
+            input_ids=inputs["input_ids"],
+            pixel_values=inputs["pixel_values"],
+            max_new_tokens=1024,
+            num_beams=3,
+            early_stopping=True,
+        )
 
     generated_text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
     return generated_text
@@ -453,7 +471,7 @@ def main():
             )
 
         # Validate
-        val_loss = evaluate(model, valid_loader, device)
+        val_loss = evaluate(model, valid_loader, device, amp_dtype=amp_dtype if use_amp else None)
         epoch_time = time.time() - epoch_start
 
         print(f"\n  Epoch {epoch+1}/{args.epochs} Summary:")
@@ -504,7 +522,7 @@ def main():
 
     test_img = os.path.join(args.data_dir, test_sample["image"].replace("\\", "/"))
     if os.path.exists(test_img):
-        result = run_inference_sample(model, processor, test_img, device)
+        result = run_inference_sample(model, processor, test_img, device, amp_dtype=amp_dtype if use_amp else None)
         print(f"  Image: {test_sample['image']}")
         print(f"  Expected: {test_sample['target'][:200]}...")
         print(f"  Predicted: {result[:200]}...")
