@@ -355,6 +355,7 @@ def main():
     model = AutoModelForCausalLM.from_pretrained(
         args.model, trust_remote_code=True,
         torch_dtype=amp_dtype if use_amp else torch.float32,
+        attn_implementation="eager",
     )
 
     if args.gradient_checkpointing:
