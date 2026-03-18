@@ -47,7 +47,7 @@ from peft import PeftModel
 # ── Inference ──────────────────────────────────────────────────────────────────
 
 @torch.no_grad()
-def run_inference(model, processor, image_path, device, prompt="<STRUCTURED_PANTRY_OUTPUT>", amp_dtype=None):
+def run_inference(model, processor, image_path, device, prompt="<OD>", amp_dtype=None):
     """Run inference on a single image and return generated text."""
     image = Image.open(image_path).convert("RGB")
     inputs = processor(text=prompt, images=image, return_tensors="pt").to(device)
@@ -373,11 +373,11 @@ def main():
         torch_dtype=amp_dtype if amp_dtype else torch.float32,
     )
 
-    # Add custom token
-    special_tokens = {"additional_special_tokens": ["<STRUCTURED_PANTRY_OUTPUT>"]}
-    num_added = processor.tokenizer.add_special_tokens(special_tokens)
-    if num_added > 0:
-        model.resize_token_embeddings(len(processor.tokenizer))
+    # Add custom token (only needed for v1 checkpoints)
+    # special_tokens = {"additional_special_tokens": ["<STRUCTURED_PANTRY_OUTPUT>"]}
+    # num_added = processor.tokenizer.add_special_tokens(special_tokens)
+    # if num_added > 0:
+    #     model.resize_token_embeddings(len(processor.tokenizer))
 
     # Load LoRA adapter
     print(f"Loading LoRA checkpoint: {args.checkpoint}...")
