@@ -327,8 +327,8 @@ def main():
     parser = argparse.ArgumentParser(
         description="Evaluate fine-tuned Florence-2 on food pantry test set.",
     )
-    parser.add_argument("--checkpoint", type=str, required=True,
-                        help="Path to the LoRA checkpoint (e.g. ./checkpoints/best_model)")
+    parser.add_argument("--checkpoint", type=str, default=None,
+                        help="Path to the LoRA checkpoint (e.g. ./checkpoints/best_model). Omit for zero-shot.")
     parser.add_argument("--base-model", type=str, default="microsoft/Florence-2-base-ft",
                         help="Base model name.")
     parser.add_argument("--data-dir", type=str, default=".",
@@ -380,13 +380,16 @@ def main():
     # if num_added > 0:
     #     model.resize_token_embeddings(len(processor.tokenizer))
 
-    # Load LoRA adapter
-    print(f"Loading LoRA checkpoint: {args.checkpoint}...")
-    model = PeftModel.from_pretrained(model, args.checkpoint)
-    model = model.merge_and_unload()  # Merge LoRA weights for faster inference
+    # Load LoRA adapter (skip for zero-shot baseline)
+    if args.checkpoint:
+        print(f"Loading LoRA checkpoint: {args.checkpoint}...")
+        model = PeftModel.from_pretrained(model, args.checkpoint)
+        model = model.merge_and_unload()  # Merge LoRA weights for faster inference
+        print("  Model loaded and merged.")
+    else:
+        print("  Zero-shot mode (no checkpoint loaded).")
     model.to(device)
     model.eval()
-    print("  Model loaded and merged.")
 
     # ── Load Test Data ─────────────────────────────────────────────────────
 
