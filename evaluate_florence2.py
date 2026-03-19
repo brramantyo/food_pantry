@@ -371,6 +371,7 @@ def main():
         args.base_model,
         trust_remote_code=True,
         torch_dtype=amp_dtype if amp_dtype else torch.float32,
+        attn_implementation="eager",
     )
 
     # Add custom token (only needed for v1 checkpoints)
