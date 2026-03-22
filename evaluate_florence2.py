@@ -32,6 +32,7 @@ Usage:
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from collections import Counter, defaultdict
@@ -74,42 +75,139 @@ def run_inference(model, processor, image_path, device, prompt="<OD>", amp_dtype
     return generated_text
 
 
+VALID_CATEGORIES = {
+    "Baby Food",
+    "Beans and Legumes - Canned or Dried",
+    "Bread and Bakery Products",
+    "Canned Tomato Products",
+    "Carbohydrate Meal",
+    "Condiments and Sauces",
+    "Dairy and Dairy Alternatives",
+    "Desserts and Sweets",
+    "Drinks",
+    "Fresh Fruit",
+    "Fruits - Canned or Processed",
+    "Granola Products",
+    "Meat and Poultry - Canned",
+    "Meat and Poultry - Fresh",
+    "Nut Butters and Nuts",
+    "Ready Meals",
+    "Savory Snacks and Crackers",
+    "Seafood - Canned",
+    "Soup",
+    "Vegetables - Canned",
+    "Vegetables - Fresh",
+}
+
+VALID_PACKAGE_TYPES = {
+    "bag", "box", "bottle", "can", "carton", "jar", "pouch",
+    "container", "package", "wrapper", "tub", "tray", "tube",
+    "cup", "jug", "packet", "bundle", "sleeve", "tin",
+}
+
+
+def fix_json_text(text: str) -> str:
+    """Apply multiple fixes to corrupted JSON text from Florence-2."""
+    t = text.strip()
+    t = t.replace("'", '"')
+    t = re.sub(r'"\s*([\w]+)_\s*([\w]+)\s*"', r'"\1_\2"', t)
+    t = re.sub(r'"(\w+):"\s*"', r'"\1": "', t)
+    return t
+
+
+def extract_items_regex(text: str) -> list:
+    """Last-resort: use regex to find known category names and nearby package types."""
+    items = []
+    found_categories = []
+    for cat in VALID_CATEGORIES:
+        if cat.lower() in text.lower():
+            found_categories.append(cat)
+    for cat in found_categories:
+        pkg = "unknown"
+        for pt in VALID_PACKAGE_TYPES:
+            cat_pos = text.lower().find(cat.lower())
+            if cat_pos >= 0:
+                nearby = text[cat_pos:cat_pos + 150].lower()
+                if pt in nearby:
+                    pkg = pt
+                    break
+        items.append({"name": cat, "package_type": pkg, "confidence": "high"})
+    return items
+
+
 def parse_prediction(text: str) -> Optional[dict]:
     """
-    Attempt to parse model output as JSON.
-    Tries multiple strategies to extract valid JSON.
+    Robust parse of Florence-2 model output as JSON.
+    Tries multiple strategies from strict to fuzzy.
     """
     text = text.strip()
+    if not text:
+        return None
 
-    # Strategy 1: Direct parse
-    try:
-        result = json.loads(text)
-        if isinstance(result, dict) and "items" in result:
-            return result
-    except json.JSONDecodeError:
-        pass
-
-    # Strategy 2: Find JSON object in text
-    start = text.find("{")
-    end = text.rfind("}") + 1
-    if start >= 0 and end > start:
+    # Strategy 1: Direct parse (original + fixed)
+    for candidate in [text, fix_json_text(text)]:
         try:
-            result = json.loads(text[start:end])
+            result = json.loads(candidate)
             if isinstance(result, dict) and "items" in result:
                 return result
         except json.JSONDecodeError:
             pass
 
-    # Strategy 3: Try wrapping in {"items": [...]}
-    start = text.find("[")
-    end = text.rfind("]") + 1
-    if start >= 0 and end > start:
-        try:
-            items = json.loads(text[start:end])
-            if isinstance(items, list):
-                return {"items": items}
-        except json.JSONDecodeError:
-            pass
+    # Strategy 2: Find JSON object in text
+    fixed = fix_json_text(text)
+    for candidate in [fixed, text]:
+        start = candidate.find("{")
+        end = candidate.rfind("}") + 1
+        if start >= 0 and end > start:
+            try:
+                result = json.loads(candidate[start:end])
+                if isinstance(result, dict) and "items" in result:
+                    return result
+            except json.JSONDecodeError:
+                pass
+
+    # Strategy 3: Fix truncated JSON — try closing it
+    fixed = fix_json_text(text)
+    for candidate in [fixed, text]:
+        start = candidate.find("{")
+        if start >= 0:
+            fragment = candidate[start:]
+            for suffix in ['"}]}', '"}]}}', ']}}', ']}', '}]}', '"}}', '"}', '}']:
+                try:
+                    result = json.loads(fragment + suffix)
+                    if isinstance(result, dict) and "items" in result:
+                        valid_items = [item for item in result["items"]
+                                       if isinstance(item, dict) and "name" in item]
+                        if valid_items:
+                            return {"items": valid_items}
+                except json.JSONDecodeError:
+                    pass
+
+    # Strategy 4: Extract array and wrap
+    for candidate in [fix_json_text(text), text]:
+        start = candidate.find("[")
+        end = candidate.rfind("]") + 1
+        if start >= 0 and end > start:
+            try:
+                items = json.loads(candidate[start:end])
+                if isinstance(items, list):
+                    return {"items": items}
+            except json.JSONDecodeError:
+                pass
+
+    # Strategy 5: ast.literal_eval
+    try:
+        import ast
+        result = ast.literal_eval(fix_json_text(text))
+        if isinstance(result, dict) and "items" in result:
+            return result
+    except (ValueError, SyntaxError):
+        pass
+
+    # Strategy 6: Regex extraction (last resort)
+    items = extract_items_regex(text)
+    if items:
+        return {"items": items}
 
     return None
 
