@@ -109,9 +109,51 @@ VALID_PACKAGE_TYPES = {
 def fix_json_text(text: str) -> str:
     """Apply multiple fixes to corrupted JSON text from Florence-2."""
     t = text.strip()
+    # Single quotes to double quotes
     t = t.replace("'", '"')
+    # Fix spaced-out keys: " name" -> "name", " package_ type" -> "package_type"
+    t = re.sub(r'"\s+([\w])', r'"\1', t)  # leading space inside quotes
+    t = re.sub(r'([\w])\s+"', r'\1"', t)  # trailing space inside quotes
+    # Fix underscored keys with spaces: "package_ type" -> "package_type"
     t = re.sub(r'"\s*([\w]+)_\s*([\w]+)\s*"', r'"\1_\2"', t)
+    # Fix colon stuck to key: "name:" "value" -> "name": "value"
     t = re.sub(r'"(\w+):"\s*"', r'"\1": "', t)
+    # Fix missing colon: "name" "value" -> "name": "value"  (only for known keys)
+    for key in ["name", "package_type", "confidence"]:
+        t = re.sub(rf'"{key}"\s*"', f'"{key}": "', t)
+    # Fix values that lost their key structure: "packaged" alone -> "package_type": "package"
+    # Fix truncated items: {..., "high"} -> {..., "confidence": "high"}
+    return t
+
+
+def fix_json_deep(text: str) -> str:
+    """
+    More aggressive JSON repair for multi-item Florence-2 output.
+    Handles common corruption patterns in second/third items.
+    """
+    t = fix_json_text(text)
+    
+    # Fix pattern: }, {" name" -> }, {"name"  (spaces in subsequent items)
+    t = re.sub(r'\}\s*,\s*\{\s*"', '}, {"', t)
+    
+    # Fix pattern: "high"}]  missing closing (ensure proper termination)
+    if t.count('[') > t.count(']'):
+        t = t + ']' * (t.count('[') - t.count(']'))
+    if t.count('{') > t.count('}'):
+        t = t + '}' * (t.count('{') - t.count('}'))
+    
+    # Fix broken item objects — try to reconstruct valid items
+    # Pattern: {"name": "X", "package_type": "Y", "confidence": "high"} is valid
+    # Pattern: {"name": "X", "packaged", "high"} needs fixing
+    # Replace shorthand confidence
+    t = re.sub(r',\s*"high"\s*\}', ', "confidence": "high"}', t)
+    t = re.sub(r',\s*"medium"\s*\}', ', "confidence": "medium"}', t)
+    t = re.sub(r',\s*"low"\s*\}', ', "confidence": "low"}', t)
+    
+    # Fix "packaged" -> "package_type": "package"
+    t = re.sub(r'"packaged"', '"package_type": "package"', t)
+    t = re.sub(r'"packet"', '"package_type": "packet"', t)
+    
     return t
 
 
@@ -139,13 +181,14 @@ def parse_prediction(text: str) -> Optional[dict]:
     """
     Robust parse of Florence-2 model output as JSON.
     Tries multiple strategies from strict to fuzzy.
+    v8: Enhanced to handle corrupted multi-item JSON output.
     """
     text = text.strip()
     if not text:
         return None
 
-    # Strategy 1: Direct parse (original + fixed)
-    for candidate in [text, fix_json_text(text)]:
+    # Strategy 1: Direct parse (original + fixed + deep fixed)
+    for candidate in [text, fix_json_text(text), fix_json_deep(text)]:
         try:
             result = json.loads(candidate)
             if isinstance(result, dict) and "items" in result:
@@ -153,9 +196,9 @@ def parse_prediction(text: str) -> Optional[dict]:
         except json.JSONDecodeError:
             pass
 
-    # Strategy 2: Find JSON object in text
-    fixed = fix_json_text(text)
-    for candidate in [fixed, text]:
+    # Strategy 2: Find JSON object in text (try deep fix first)
+    for fixer in [fix_json_deep, fix_json_text, lambda x: x]:
+        candidate = fixer(text)
         start = candidate.find("{")
         end = candidate.rfind("}") + 1
         if start >= 0 and end > start:
@@ -166,13 +209,15 @@ def parse_prediction(text: str) -> Optional[dict]:
             except json.JSONDecodeError:
                 pass
 
-    # Strategy 3: Fix truncated JSON — try closing it
-    fixed = fix_json_text(text)
-    for candidate in [fixed, text]:
+    # Strategy 3: Fix truncated JSON — try closing it (with deep fix)
+    for fixer in [fix_json_deep, fix_json_text, lambda x: x]:
+        candidate = fixer(text)
         start = candidate.find("{")
         if start >= 0:
             fragment = candidate[start:]
-            for suffix in ['"}]}', '"}]}}', ']}}', ']}', '}]}', '"}}', '"}', '}']:
+            for suffix in ['"}]}', '"}]}}', ']}}', ']}', '}]}', '"}}', '"}', '}',
+                           '"}}]}', ', "confidence": "high"}]}',
+                           '", "confidence": "high"}]}']:
                 try:
                     result = json.loads(fragment + suffix)
                     if isinstance(result, dict) and "items" in result:
@@ -184,7 +229,8 @@ def parse_prediction(text: str) -> Optional[dict]:
                     pass
 
     # Strategy 4: Extract array and wrap
-    for candidate in [fix_json_text(text), text]:
+    for fixer in [fix_json_deep, fix_json_text, lambda x: x]:
+        candidate = fixer(text)
         start = candidate.find("[")
         end = candidate.rfind("]") + 1
         if start >= 0 and end > start:
@@ -198,13 +244,13 @@ def parse_prediction(text: str) -> Optional[dict]:
     # Strategy 5: ast.literal_eval
     try:
         import ast
-        result = ast.literal_eval(fix_json_text(text))
+        result = ast.literal_eval(fix_json_deep(text))
         if isinstance(result, dict) and "items" in result:
             return result
     except (ValueError, SyntaxError):
         pass
 
-    # Strategy 6: Regex extraction (last resort)
+    # Strategy 6: Regex extraction (last resort — extracts known category names)
     items = extract_items_regex(text)
     if items:
         return {"items": items}
