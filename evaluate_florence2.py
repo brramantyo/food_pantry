@@ -258,23 +258,32 @@ def parse_prediction(text: str) -> Optional[dict]:
     return None
 
 
+# ── Case Normalization ─────────────────────────────────────────────────────────
+
+_CANONICAL_CATEGORIES = {c.lower(): c for c in VALID_CATEGORIES}
+
+def normalize_category_name(name: str) -> str:
+    """Normalize category name to canonical casing (e.g. 'Seafood - canned' → 'Seafood - Canned')."""
+    return _CANONICAL_CATEGORIES.get(name.lower().strip(), name)
+
+
 # ── Metrics ────────────────────────────────────────────────────────────────────
 
 def extract_class_set(parsed: dict) -> Set[str]:
-    """Extract set of class names from parsed prediction."""
+    """Extract set of class names from parsed prediction (with case normalization)."""
     if parsed is None or "items" not in parsed:
         return set()
-    return {item["name"] for item in parsed["items"] if "name" in item}
+    return {normalize_category_name(item["name"]) for item in parsed["items"] if "name" in item}
 
 
 def extract_class_counts(parsed: dict) -> Dict[str, int]:
-    """Extract class name -> count mapping from parsed prediction."""
+    """Extract class name -> count mapping from parsed prediction (with case normalization)."""
     if parsed is None or "items" not in parsed:
         return {}
     counts = {}
     for item in parsed["items"]:
         if "name" in item:
-            counts[item["name"]] = item.get("count", 1)
+            counts[normalize_category_name(item["name"])] = item.get("count", 1)
     return counts
 
 
