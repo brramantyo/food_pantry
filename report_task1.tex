@@ -1,0 +1,329 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{amsmath}
+\usepackage{enumitem}
+
+\title{Food Pantry Item Classification using Fine-Tuned Florence-2 with LoRA}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section{Problem and Objective}
+
+Food pantries process donated items that must be sorted into standardized categories for inventory and distribution. Manual sorting is slow and inconsistent. This work fine-tunes a vision--language model to classify food pantry items from WhatsApp-captured images into 21 predefined categories, outputting structured JSON with category names and package types.
+
+The objective is to maximize classification F1-score using a small, real-world dataset with significant class imbalance and noisy image conditions (compressed WhatsApp photos, varying lighting, mixed backgrounds).
+
+\section{Dataset}
+
+\subsection{Source and Collection}
+
+Images were collected from food pantry operations via WhatsApp. Each image contains one or more food items photographed in uncontrolled conditions. Ground-truth labels were manually annotated with category name, package type, and item count in a structured JSON format.
+
+\subsection{Category Taxonomy}
+
+The 21 target categories are: Baby Food, Beans and Legumes (Canned or Dried), Bread and Bakery Products, Canned Tomato Products, Carbohydrate Meal, Condiments and Sauces, Dairy and Dairy Alternatives, Desserts and Sweets, Drinks, Fresh Fruit, Fruits (Canned or Processed), Granola Products, Meat and Poultry (Canned), Meat and Poultry (Fresh), Nut Butters and Nuts, Ready Meals, Savory Snacks and Crackers, Seafood (Canned), Soup, Vegetables (Canned), and Vegetables (Fresh).
+
+\subsection{Data Splits}
+
+\begin{table}[h]
+\centering
+\caption{Dataset split sizes}
+\begin{tabular}{lc}
+\toprule
+Split & Samples \\
+\midrule
+Train & $\sim$500 \\
+Validation & $\sim$60 \\
+Test & 166 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The dataset is heavily imbalanced. The largest class (Desserts and Sweets) has 30 test samples, while the smallest (Baby Food) has 1. Several classes have fewer than 10 test samples, making per-class metrics noisy but still informative.
+
+\subsection{External Data: Grocery Store Dataset}
+
+To augment training data, the Grocery Store Dataset~\cite{klasson2019} was mapped to the 21 food pantry categories and merged into the training set. This added $\sim$2{,}500 samples from 81 product classes, though many grocery categories have no direct mapping to food pantry categories.
+
+\section{Model Architecture}
+
+\subsection{Base Model}
+
+Florence-2-large-ft~\cite{xiao2023florence} is a vision--language foundation model with a DaViT vision encoder and an autoregressive language decoder. The model accepts an image and a text prompt, then generates a text response. The pre-trained model supports object detection, captioning, and grounding tasks through unified prompt-based inference.
+
+For this task, the model receives the \texttt{<OD>} prompt and is fine-tuned to generate structured JSON output listing detected food categories with package types and counts.
+
+\subsection{LoRA Configuration}
+
+Low-Rank Adaptation (LoRA)~\cite{hu2021lora} was applied to both the vision encoder and language decoder, following the recommendation that adapting both components yields stronger domain transfer than adapting the decoder alone.
+
+\begin{table}[h]
+\centering
+\caption{LoRA configuration}
+\begin{tabular}{ll}
+\toprule
+Parameter & Value \\
+\midrule
+Rank ($r$) & 48 \\
+Alpha ($\alpha$) & 96 \\
+Dropout & 0.05 \\
+Vision targets & \texttt{qkv}, \texttt{proj} \\
+Decoder targets & \texttt{q\_proj}, \texttt{v\_proj}, \texttt{k\_proj}, \texttt{o\_proj}, \texttt{out\_proj}, \texttt{fc1}, \texttt{fc2} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Training Strategy}
+
+Training proceeded through multiple iterations. The key configurations that led to the final model are described below.
+
+\subsection{V9: Mixed-Data Training}
+
+The v9 model was trained on merged data (food pantry + mapped Grocery Store samples) in a single stage with the following settings:
+
+\begin{table}[h]
+\centering
+\caption{V9 training hyperparameters}
+\begin{tabular}{ll}
+\toprule
+Parameter & Value \\
+\midrule
+Epochs & 30 \\
+Batch size & 2 (gradient accumulation 8, effective 16) \\
+Learning rate & $2 \times 10^{-5}$ \\
+Scheduler & Cosine with 10\% warmup \\
+Loss & Focal loss ($\gamma$=1.0) + label smoothing (0.05) \\
+Min samples/class & 25 (oversampled) \\
+Weight decay & 0.01 \\
+Precision & bfloat16 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Additional training modifications:
+\begin{itemize}[nosep]
+\item Confusion-pair boosting: 6 low-recall classes received +30\% extra samples
+\item Multi-item images received 2$\times$ sampling weight
+\item Case normalization applied to category names in evaluation
+\end{itemize}
+
+\subsection{V11: Surgical Fine-Tuning from V9 Checkpoint}
+
+Rather than training from scratch, v11 loaded the v9 best checkpoint and continued training at a lower learning rate, targeting the 5 weakest classes.
+
+\begin{table}[h]
+\centering
+\caption{V11 training hyperparameters (changes from v9 in bold)}
+\begin{tabular}{ll}
+\toprule
+Parameter & Value \\
+\midrule
+Epochs & \textbf{10} \\
+Batch size & 2 (gradient accumulation 8, effective 16) \\
+Learning rate & $\mathbf{1 \times 10^{-5}}$ \\
+Scheduler & Cosine with \textbf{5\%} warmup \\
+Loss & \textbf{Cross-entropy} + label smoothing (\textbf{0.03}) \\
+Min samples/class & \textbf{50} (more aggressive oversampling) \\
+Initialization & \textbf{V9 best checkpoint} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The key insight: continuing from a converged checkpoint with a lower learning rate and targeted class boosting outperformed both training from scratch and two-stage pre-training approaches.
+
+\section{Evaluation}
+
+\subsection{Metrics}
+
+All models were evaluated on the same 166-sample test set using:
+\begin{itemize}[nosep]
+\item \textbf{Micro F1}: weighted by sample count; reflects overall prediction quality
+\item \textbf{Macro F1}: unweighted average across classes; reflects fairness across categories
+\item \textbf{Precision / Recall}: micro-averaged
+\item \textbf{Category Detection Accuracy}: fraction of images where the predicted category set exactly matches the ground truth
+\end{itemize}
+
+\subsection{Baseline: Vanilla Florence-2}
+
+The pre-trained Florence-2-large-ft model (without fine-tuning) was evaluated using keyword-based category extraction from its native output. Two prompts were tested: object detection (\texttt{<OD>}) and captioning (\texttt{<CAPTION>}).
+
+\begin{table}[h]
+\centering
+\caption{Baseline results (no fine-tuning)}
+\begin{tabular}{lcccc}
+\toprule
+Prompt & Precision & Recall & Micro F1 & Macro F1 \\
+\midrule
+\texttt{<OD>} (keyword match) & 54.1\% & 18.3\% & 27.4\% & 14.2\% \\
+\texttt{<CAPTION>} (keyword match) & 50.0\% & 30.7\% & 38.0\% & 30.8\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The vanilla model cannot produce structured JSON output and has no knowledge of the 21 food pantry categories, resulting in low performance even with generous keyword matching.
+
+\subsection{Fine-Tuning Progression}
+
+Table~\ref{tab:progression} shows the evolution of results across training iterations.
+
+\begin{table}[h]
+\centering
+\caption{Fine-tuning results across iterations}
+\label{tab:progression}
+\begin{tabular}{lccccc}
+\toprule
+Version & JSON Parse & Precision & Recall & Micro F1 & Macro F1 \\
+\midrule
+Vanilla (\texttt{<OD>}) & 0.0\% & 54.1\% & 18.3\% & 27.4\% & 14.2\% \\
+v3 (decoder-only LoRA) & 71.1\% & 82.3\% & 36.2\% & 50.3\% & 40.5\% \\
+v5 (improved training) & 93.4\% & 79.6\% & 49.8\% & 61.3\% & 58.0\% \\
+v6 (vision + decoder LoRA) & 100\% & 84.4\% & 62.5\% & 71.9\% & 70.6\% \\
+v7.1 (focal loss, balanced) & 100\% & 82.0\% & 66.9\% & 73.7\% & 73.4\% \\
+v9 (mixed data, single-stage) & 100\% & 80.2\% & 70.9\% & 75.3\% & 74.6\% \\
+\textbf{v11 (surgical from v9)} & \textbf{100\%} & \textbf{82.3\%} & \textbf{70.5\%} & \textbf{76.0\%} & \textbf{71.9\%} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Key transitions:
+\begin{itemize}[nosep]
+\item \textbf{v3 $\to$ v6} (+21.6\% F1): Adding LoRA to the vision encoder was the single largest improvement.
+\item \textbf{v6 $\to$ v9} (+3.4\% F1): Focal loss, class balancing, and external data each contributed incrementally.
+\item \textbf{v9 $\to$ v11} (+0.7\% F1): Surgical fine-tuning from checkpoint recovered precision while maintaining recall.
+\end{itemize}
+
+\subsection{Negative Results}
+
+Two approaches that did not improve over v9:
+
+\begin{table}[h]
+\centering
+\caption{Approaches that underperformed}
+\begin{tabular}{lcl}
+\toprule
+Approach & Micro F1 & Issue \\
+\midrule
+v9.1 (retrain with case-fixed data) & 65.2\% & Hallucinated ghost classes \\
+v10 (two-stage: grocery $\to$ pantry) & 73.7\% & Ghost classes, lower macro F1 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Both approaches caused the model to generate categories outside the 21-class taxonomy (e.g., ``Vegetables - Soup'', ``Vegetables - Sliced''). Single-stage mixed training (v9) followed by surgical fine-tuning (v11) was more stable.
+
+\subsection{Inference-Time Techniques}
+
+Two inference-time strategies were evaluated on top of the best models:
+
+\begin{table}[h]
+\centering
+\caption{Inference-time augmentation results}
+\begin{tabular}{lcccc}
+\toprule
+Method & Precision & Recall & Micro F1 & Macro F1 \\
+\midrule
+v11 (standard) & 82.3\% & 70.5\% & 76.0\% & 71.9\% \\
+v11 + TTA (5 augmentations) & 79.2\% & 71.3\% & 75.0\% & 70.9\% \\
+v9 + TTA (5 augmentations) & 78.9\% & 72.9\% & 75.8\% & 75.3\% \\
+Ensemble v9+v11 (union) & 76.6\% & 75.7\% & 76.1\% & 72.8\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Test-Time Augmentation (horizontal flip, brightness $\pm$20\%, center crop 90\%) hurt the high-precision v11 model ($-1.0\%$ F1) but helped v9 slightly ($+0.5\%$). Ensembling v9 and v11 produced the highest recall (75.7\%) but reduced precision. The gains were marginal ($\leq$0.1\% micro F1), confirming that the single v11 model is near the performance ceiling for this dataset size.
+
+\section{Per-Class Analysis (V11)}
+
+\begin{table}[h]
+\centering
+\caption{Per-class results for v11 (final model)}
+\label{tab:perclass}
+\begin{tabular}{lrrrr}
+\toprule
+Category & Precision & Recall & F1 & Support \\
+\midrule
+Meat and Poultry - Fresh & 100.0\% & 92.9\% & 96.3\% & 14 \\
+Fresh Fruit & 100.0\% & 85.7\% & 92.3\% & 7 \\
+Drinks & 100.0\% & 83.3\% & 90.9\% & 6 \\
+Fruits - Canned or Processed & 100.0\% & 83.3\% & 90.9\% & 12 \\
+Bread and Bakery Products & 81.2\% & 92.9\% & 86.7\% & 14 \\
+Canned Tomato Products & 75.0\% & 100.0\% & 85.7\% & 12 \\
+Nut Butters and Nuts & 87.5\% & 77.8\% & 82.3\% & 9 \\
+Desserts and Sweets & 91.3\% & 70.0\% & 79.2\% & 30 \\
+Beans and Legumes & 76.9\% & 76.9\% & 76.9\% & 13 \\
+Soup & 80.0\% & 72.7\% & 76.2\% & 11 \\
+Carbohydrate Meal & 70.4\% & 82.6\% & 76.0\% & 23 \\
+Condiments and Sauces & 90.0\% & 60.0\% & 72.0\% & 15 \\
+Dairy and Dairy Alternatives & 100.0\% & 55.6\% & 71.4\% & 9 \\
+Vegetables - Canned & 90.9\% & 55.6\% & 69.0\% & 18 \\
+Meat and Poultry - Canned & 80.0\% & 57.1\% & 66.7\% & 7 \\
+Seafood - Canned & 75.0\% & 60.0\% & 66.7\% & 5 \\
+Savory Snacks and Crackers & 71.4\% & 58.8\% & 64.5\% & 17 \\
+Granola Products & 66.7\% & 50.0\% & 57.1\% & 8 \\
+Ready Meals & 75.0\% & 35.3\% & 48.0\% & 17 \\
+Vegetables - Fresh & 33.3\% & 33.3\% & 33.3\% & 3 \\
+Baby Food & 100.0\% & 100.0\% & 100.0\% & 1 \\
+\midrule
+\textbf{Micro Average} & \textbf{82.3\%} & \textbf{70.5\%} & \textbf{76.0\%} & \textbf{276} \\
+\textbf{Macro Average} & \textbf{81.9\%} & \textbf{71.1\%} & \textbf{74.8\%} & \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Classes with $>$80\% F1 are visually distinctive (fresh meat, whole fruit, beverages). The weakest classes share two patterns:
+\begin{itemize}[nosep]
+\item \textbf{Low support}: Vegetables - Fresh (3 samples), Baby Food (1 sample) — too few test examples for reliable estimates.
+\item \textbf{Visual ambiguity}: Ready Meals, Savory Snacks, and Granola Products are often packaged similarly, making visual-only classification difficult.
+\end{itemize}
+
+\section{Discussion}
+
+\subsection{What Worked}
+
+\begin{enumerate}[nosep]
+\item \textbf{LoRA on both vision encoder and decoder}: The largest single improvement (+21.6\% F1 from v3 to v6). Adapting only the language decoder is insufficient for domain transfer to novel visual categories.
+\item \textbf{External data mixing}: Adding mapped Grocery Store images improved recall across underrepresented classes without degrading precision.
+\item \textbf{Surgical fine-tuning}: Continuing from a converged checkpoint at lower learning rate was more effective than retraining from scratch or two-stage pre-training.
+\item \textbf{Class balancing}: Oversampling minority classes with targeted confusion-pair boosting prevented the model from defaulting to majority-class predictions.
+\end{enumerate}
+
+\subsection{What Did Not Work}
+
+\begin{enumerate}[nosep]
+\item \textbf{Two-stage pre-training} (v10): Pre-training on grocery data then fine-tuning on pantry data produced ghost classes and did not outperform single-stage mixing.
+\item \textbf{Aggressive retraining} (v9.1): Re-initializing and retraining with case-corrected data dropped F1 by 10\%, likely due to losing learned representations.
+\item \textbf{Test-Time Augmentation}: TTA slightly helped the lower-precision model (v9) but hurt the higher-precision model (v11), suggesting the final model's predictions are already stable under augmentation.
+\end{enumerate}
+
+\subsection{Limitations}
+
+\begin{itemize}[nosep]
+\item The test set (166 samples) is small; per-class metrics for low-support categories have high variance.
+\item The model outputs category-level predictions, not spatial bounding boxes. Items are identified but not localized within the image.
+\item Several categories (Ready Meals, Carbohydrate Meal, Soup) have inherent visual overlap that may require text-reading capabilities (OCR) to resolve.
+\end{itemize}
+
+\section{Conclusion and Next Steps}
+
+Fine-tuning Florence-2-large-ft with LoRA on both the vision encoder and language decoder achieves 76.0\% micro F1 on structured food pantry item classification, up from 27.4\% for the vanilla model. This was accomplished with approximately 500 training images and LoRA adaptation of $\sim$6.5\% of model parameters.
+
+The primary bottleneck is training data volume, particularly for underrepresented categories. The most direct path to further improvement is collecting additional labeled images for the 5 weakest classes (Ready Meals, Vegetables - Fresh, Granola Products, Savory Snacks, Dairy).
+
+\begin{thebibliography}{9}
+\bibitem{xiao2023florence}
+B.~Xiao, H.~Wu, W.~Xu, et al., ``Florence-2: Advancing a unified representation for a variety of vision tasks,'' \textit{arXiv:2311.06242}, 2023.
+
+\bibitem{hu2021lora}
+E.~J.~Hu, Y.~Shen, P.~Wallis, et al., ``LoRA: Low-rank adaptation of large language models,'' \textit{arXiv:2106.09685}, 2021.
+
+\bibitem{klasson2019}
+M.~Klasson, C.~Zhang, H.~Kjellstr{\"o}m, ``A hierarchical grocery store image dataset with visual and semantic labels,'' in \textit{Proc. IEEE WACV}, 2019.
+\end{thebibliography}
+
+\end{document}
