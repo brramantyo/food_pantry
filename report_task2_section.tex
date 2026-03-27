@@ -1,0 +1,66 @@
+\section{Task 2 Update: USDA Nutritional Matching (Initial Progress)}
+
+\subsection{Task 2 Goal}
+
+Task 2 is to match classified pantry items to entries in the USDA FoodData Central database, enabling nutritional information retrieval. The ultimate goal is an end-to-end pipeline: pantry image $\rightarrow$ item classification $\rightarrow$ USDA matching $\rightarrow$ nutritional output.
+
+\subsection{Data and Setup}
+
+\begin{itemize}[nosep,leftmargin=1.5em]
+ \item \textbf{USDA Branded Foods:} 454,126 food products with brand, description, ingredients, and nutrition facts.
+ \item \textbf{USDA SR Legacy:} 7,793 generic food items (e.g., ``rice, white, cooked'') as fallback.
+ \item \textbf{Embedding model:} all-MiniLM-L6-v2 sentence transformer (384-dim, normalized for cosine similarity).
+ \item \textbf{Total index:} 461,919 items, 338 MB embedding matrix.
+\end{itemize}
+
+\subsection{Matching Approach}
+
+The matching pipeline uses a hybrid strategy:
+
+\begin{enumerate}[nosep,leftmargin=1.5em]
+ \item \textbf{Semantic search.} Each pantry category name is encoded using the sentence transformer and matched against all USDA entries by cosine similarity. This handles free-text queries and approximate matches.
+ \item \textbf{Category boosting.} USDA items whose \texttt{brandedFoodCategory} field relates to the pantry category receive a score boost, improving precision for known category mappings.
+ \item \textbf{Nutrition aggregation.} The top-$k$ USDA matches for each pantry category are used to compute an average nutritional profile (calories, protein, carbohydrates, fat).
+\end{enumerate}
+
+\subsection{Initial Results}
+
+Table~\ref{tab:task2nutrition} shows the estimated average nutritional profile per pantry category based on the top 50 USDA matches. Values are per serving or per 100g depending on the USDA data source.
+
+\begin{table}[h]
+\centering
+\caption{Average nutritional profile per pantry category (top 50 USDA matches)}
+\label{tab:task2nutrition}
+\small
+\begin{tabular}{lrrrr}
+\toprule
+Pantry Category & Energy (kcal) & Protein (g) & Carbs (g) & Fat (g) \\
+\midrule
+Nut Butters and Nuts & 170 & 5.3 & 7.3 & 14.3 \\
+Savory Snacks and Crackers & 363 & 8.5 & 53.1 & 13.6 \\
+Seafood -- Canned & 78 & 12.9 & 0.9 & 2.3 \\
+Soup & 136 & 5.8 & 16.6 & 5.3 \\
+Vegetables -- Canned & 39 & 1.6 & 7.7 & 0.2 \\
+Ready Meals & 309 & 15.0 & 36.7 & 11.5 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The nutritional profiles are generally reasonable (e.g., canned vegetables are low-calorie, nut butters are high-fat, seafood is high-protein), suggesting that the semantic matching captures meaningful food similarity.
+
+\subsection{Current Limitations}
+
+\begin{itemize}[nosep,leftmargin=1.5em]
+ \item \textbf{Category-level matching is coarse.} Since Task 1 only outputs a broad category (e.g., ``Granola Products''), the USDA match is an average over many possible products. Product-level identification (e.g., via OCR or detection) would enable exact matching.
+ \item \textbf{Some cross-category leakage.} Semantic search occasionally matches items from neighboring categories (e.g., ``Vegetables -- Fresh'' matching frozen vegetable products).
+ \item \textbf{No ground truth for Task 2.} There is currently no labeled mapping from pantry images to specific USDA entries, making quantitative evaluation difficult.
+\end{itemize}
+
+\subsection{Next Steps for Task 2}
+
+\begin{enumerate}[nosep,leftmargin=1.5em]
+ \item Add product-level matching using Florence-2 OCR to read package text from images, enabling exact USDA lookups.
+ \item Combine semantic matching with lexical methods (BM25, character n-gram) for more robust retrieval.
+ \item Build an end-to-end demo pipeline: image $\rightarrow$ classification $\rightarrow$ USDA match $\rightarrow$ nutrition output.
+ \item Define evaluation criteria for Task 2 quality (e.g., nutritional accuracy vs.\ a manually curated subset).
+\end{enumerate}
