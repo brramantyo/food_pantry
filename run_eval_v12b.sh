@@ -10,9 +10,9 @@ cd ~/food_pantry
 echo "=== Evaluating v12b ==="
 
 python evaluate_florence2.py \
-  --data-dir . \
-  --test-jsonl ./florence2_data/test_v5.jsonl \
+  --base-model microsoft/Florence-2-large-ft \
   --checkpoint ./checkpoints_v12b/best_model \
-  --model microsoft/Florence-2-large-ft \
+  --data-dir . \
+  --jsonl ./florence2_data/test_v5.jsonl \
   --output ./eval_results_v12b.json \
   --bf16
