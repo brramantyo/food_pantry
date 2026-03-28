@@ -1,0 +1,172 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{array}
+
+\title{Task 1 Update: Initial Successes and Bottlenecks of Florence-2 for Pantry Item Classification}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section{Task 1 Goal}
+
+Task 1 is to classify food pantry items from real pantry images into 21 predefined categories. The purpose of this initial study is to test whether Florence-2 can be adapted to this setting and to identify the main successes and bottlenecks early.
+
+\section{Experimental Setup and Dataset Insights}
+
+\begin{itemize}[nosep,leftmargin=1.5em]
+ \item \textbf{Data:} pantry images labeled into 21 categories
+ \item \textbf{Test set:} 166 images, with 1932 object-level annotations.
+ \item \textbf{Model:} Florence-2-large-ft
+ \item \textbf{Adaptation:} LoRA fine-tuning
+ \item \textbf{Output format:} structured category prediction in JSON-like format
+\end{itemize}
+
+The training data are limited and imbalanced. To improve coverage, I mapped part of the Grocery Store Dataset \cite{klasson2019grocery} into the pantry taxonomy and used the matched classes as additional training data.
+
+The full dataset contains 1,123 images split approximately 70/15/15. About 34\% of images contain more than one class, with an average of 1.55 classes per image, so the task is harder than standard single-label classification.
+
+The dataset is also imbalanced. The largest class has 189 images, whereas Baby Food has 11 and Vegetables - Fresh has 21. In addition, some difficult classes such as Carbohydrate Meal and Ready Meals often co-occur in the same image. Taken together, these properties suggest that the current bottleneck comes mainly from class imbalance, multi-class images, and overlap between related categories. I only used external grocery classes that matched the pantry categories clearly, while the unmatched grocery classes were not included.
+
+\section{Main Results}
+
+Table~\ref{tab:mainresults} summarizes the main result progression on the same 166-image test set.
+
+\begin{table}[h]
+\centering
+\caption{Main result progression on the same 166-image test set}
+\label{tab:mainresults}
+\begin{tabular}{lcccc}
+\toprule
+Model setting & Precision & Recall & Micro F1 & Macro F1 \\
+\midrule
+Vanilla Florence-2 (\texttt{<OD>}) & 54.1\% & 18.3\% & 27.4\% & 14.2\% \\
+Fine-tuned Florence-2 with vision+decoder LoRA (v6) & 84.4\% & 62.5\% & 71.9\% & 70.6\% \\
+Mixed-data fine-tuning (v9) & 80.2\% & 70.9\% & 75.3\% & 74.6\% \\
+Continued fine-tuning from the best checkpoint (v11) & 82.3\% & 70.5\% & 76.0\% & 71.9\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The main result is that vanilla Florence-2 is not enough for this pantry classification task, while fine-tuning improves performance substantially. The best current model reaches 76.0\% micro F1, compared with 27.4\% for the vanilla model.
+
+The progression across settings also helps clarify what contributed most to the improvement. The first large jump came from applying LoRA to both the vision encoder and the language decoder. Additional gains then came from using mixed pantry+grocery training data and from continuing fine-tuning from the best checkpoint rather than restarting from scratch.
+
+\section{Initial Successes}
+
+The main successes so far are as follows.
+
+\begin{enumerate}[nosep,leftmargin=1.5em]
+ \item \textbf{Fine-tuning clearly works.} 
+ Florence-2 can be adapted to pantry item classification. The gain from 27.4\% to 76.0\% micro F1 shows that the model can learn the pantry taxonomy when fine-tuned on domain data.
+
+ \item \textbf{Adapting both the vision encoder and decoder matters.} 
+ The largest improvement came from moving beyond decoder-only LoRA and adapting both the visual and language components.
+
+ \item \textbf{Mixed training with pantry and mapped grocery data helps.} 
+ Adding external grocery data improved recall and helped underrepresented categories.
+
+ \item \textbf{Continuing from a good checkpoint is better than restarting.} 
+ The best result came from continuing training from the best previous checkpoint with a lower learning rate, rather than retraining from scratch.
+\end{enumerate}
+
+\section{Main Bottlenecks and Interpretation}
+
+The current bottlenecks are also clearer.
+
+\begin{enumerate}[nosep,leftmargin=1.5em]
+ \item \textbf{Limited and imbalanced training coverage.} 
+ The dataset is small for a 21-class problem and highly imbalanced across categories. Several weak classes likely suffer from insufficient training support more than from model capacity alone.
+
+ \item \textbf{Multi-class images increase prediction difficulty.} 
+ About one-third of the images contain more than one class, so the model must often distinguish multiple pantry items within the same scene.
+
+ \item \textbf{Fine-grained overlap between packaged categories.} 
+ Several difficult classes are visually similar and also co-occur in the same image, especially Ready Meals and Carbohydrate Meal.
+
+ \item \textbf{Some remaining errors may require text-level cues.} 
+ Image-only classification appears sufficient for many categories, but some packaged products may require package text or related cues for further improvement.
+\end{enumerate}
+
+Task 1 appears feasible with Florence-2, since fine-tuning improves micro F1 from 27.4\% to 76.0\%. At this point, the main remaining limitation does not appear to be the Florence-2 backbone itself, but the dataset structure: limited training coverage, strong class imbalance, and overlap between visually similar packaged categories.
+
+This suggests that the next gains will likely come more from improving class coverage and reducing ambiguity in weak classes than from changing the core model architecture.
+
+\section{Failure Analysis}
+
+Table~\ref{tab:weakclasses} shows the five weakest classes in the current best model (v11). These classes account for most of the remaining errors.
+
+\begin{table}[h]
+\centering
+\caption{Weakest classes in the best model (v11), sorted by recall}
+\label{tab:weakclasses}
+\begin{tabular}{lccc}
+\toprule
+Class & Precision & Recall & Test Support \\
+\midrule
+Vegetables -- Fresh & 33.3\% & 33.3\% & 3 \\
+Ready Meals & 75.0\% & 35.3\% & 17 \\
+Granola Products & 66.7\% & 50.0\% & 8 \\
+Dairy and Dairy Alternatives & 100\% & 55.6\% & 9 \\
+Meat and Poultry -- Canned & 80.0\% & 57.1\% & 7 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The dominant failure mode is \textbf{under-detection in multi-label images}, not inter-class confusion. When an image contains two or three categories, the model often predicts only the most visually dominant one and misses the others. For example:
+
+\begin{itemize}[nosep,leftmargin=1.5em]
+ \item An image containing both Granola Products and Dairy is predicted as Granola only --- Dairy is missed entirely.
+ \item An image with Ready Meals and Carbohydrate Meal is predicted as Carbohydrate Meal only --- Ready Meals is dropped.
+ \item Condiments and Sauces are frequently missed when they co-occur with larger packaged items.
+\end{itemize}
+
+Direct class-to-class confusions (e.g., predicting class A as class B) are rare, typically occurring only 1--2 times each across the test set. The main pattern is omission rather than substitution.
+
+This suggests that the model has learned the individual categories reasonably well, but struggles with the multi-label aspect of the task --- generating complete predictions when multiple categories are present in a single image.
+
+\section{Next Steps}
+
+\begin{enumerate}[nosep,leftmargin=1.5em]
+ \item \textbf{Begin Task 2 (USDA nutritional matching).} Start building the USDA matching pipeline in parallel, since Task 2 performance depends on Task 1 output and may reveal additional requirements for the classification stage.
+ \item \textbf{Explore contrastive learning.} Investigate contrastive learning as an alternative or complementary approach to generative classification, which may better handle multi-label and fine-grained distinctions.
+ \item \textbf{Evaluate segmentation before classification.} Test whether using Florence-2's object detection capabilities to first localize items, then classify each crop individually, improves multi-label accuracy.
+ \item Improve weak-class coverage by making better use of existing annotations and mapped external grocery samples.
+ \item Test whether text-aware cues (e.g., OCR on package labels) help for the most difficult packaged categories.
+\end{enumerate}
+
+\section{Conclusion}
+
+This initial study shows that Florence-2 can be adapted to pantry item classification, but only after task-specific fine-tuning. The best current result is 76.0\% micro F1 on the 166-image test set, compared with 27.4\% for the vanilla model.
+
+The main remaining limitation appears to come from the dataset rather than the Florence-2 backbone itself, especially restricted class coverage and under-detection in multi-label images. The immediate next step is to begin Task 2 (USDA matching) in parallel, while exploring contrastive learning and detection-first pipelines to address the remaining Task 1 bottlenecks.
+
+\begin{thebibliography}{9}
+
+\bibitem{xiao2023florence2}
+B.~Xiao, H.~Wu, W.~Xu, X.~Dai, H.~Hu, Y.~Lu, M.~Zeng, C.~Liu, and L.~Yuan,
+``Florence-2: Advancing a Unified Representation for a Variety of Vision Tasks,''
+in \textit{Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)}, 2024.
+
+\bibitem{ro2025finetuning}
+S.~Ro, S.~Satwika, P.~Y.~Gayathri, M.~G.~Balsha, and A.~Ucar,
+``Fine-Tuning Florence2 for Enhanced Object Detection in Un-constructed Environments: Vision-Language Model Approach,''
+\textit{arXiv preprint arXiv:2503.04918}, 2025.
+
+\bibitem{pettersson2024multimodal}
+T.~Pettersson, M.~Riveiro, and T.~L\"ofstr\"om,
+``Multimodal Fine-Grained Grocery Product Recognition Using Image and OCR Text,''
+\textit{Machine Vision and Applications}, vol.~35, article 79, 2024.
+
+\bibitem{klasson2019grocery}
+M.~Klasson, C.~Zhang, and H.~Kjellstr\"om,
+``A Hierarchical Grocery Store Image Dataset with Visual and Semantic Labels,''
+in \textit{Proceedings of the IEEE Winter Conference on Applications of Computer Vision (WACV)}, 2019.
+
+\end{thebibliography}
+
+\end{document}
