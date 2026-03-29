@@ -80,96 +80,112 @@ def normalize_category(name):
 # Keywords that suggest a category when found in OCR text
 # This is the "text-aware cue" that Prof Zheng suggested
 
+# Words that appear on almost every food package (Nutrition Facts labels, etc.)
+# These must be filtered OUT before keyword matching to avoid false positives
+OCR_BLACKLIST = {
+    "nutrition", "facts", "calories", "serving", "servings", "ingredients",
+    "total fat", "saturated", "cholesterol", "sodium", "carbohydrate",
+    "dietary fiber", "sugars", "protein", "vitamin", "calcium", "iron",
+    "daily value", "amount per", "percent", "enlarged", "show detail",
+    "distributed", "manufactured", "best by", "best before", "use by",
+    "net wt", "net weight", "keep refrigerated", "store in",
+}
+
+# Keywords that suggest a category when found in OCR text
+# v3 fixes: removed ambiguous single-word triggers, require more specific matches
 OCR_CATEGORY_KEYWORDS = {
-    "Baby Food": ["baby", "gerber", "infant", "toddler", "beech-nut"],
+    "Baby Food": ["gerber", "infant formula", "baby food", "beech-nut baby", "toddler meal"],
     "Beans and Legumes - Canned or Dried": [
-        "beans", "lentils", "chickpea", "kidney", "black bean", "pinto",
-        "garbanzo", "navy bean", "refried", "goya"
+        "black beans", "kidney beans", "pinto beans", "chickpeas", "lentils",
+        "garbanzo", "navy beans", "refried beans", "goya beans", "bush's beans"
     ],
     "Bread and Bakery Products": [
-        "bread", "bagel", "muffin", "roll", "bun", "tortilla", "pita",
-        "croissant", "biscuit", "loaf", "bakery", "wonder", "sara lee"
+        "bread", "bagels", "muffins", "tortilla", "pita bread",
+        "croissant", "biscuits", "bakery", "wonder bread", "sara lee",
+        "whole wheat bread", "white bread", "hamburger buns", "hot dog buns"
     ],
     "Canned Tomato Products": [
-        "tomato", "marinara", "salsa", "pasta sauce", "hunt's",
-        "ro-tel", "rotel", "diced tomato", "crushed tomato", "tomato paste",
-        "tomato sauce", "contadina", "muir glen"
+        "diced tomato", "crushed tomato", "tomato paste", "tomato sauce",
+        "marinara", "pasta sauce", "hunt's tomato", "ro-tel", "rotel",
+        "contadina", "muir glen", "canned tomato"
     ],
     "Carbohydrate Meal": [
-        "pasta", "rice", "noodle", "macaroni", "spaghetti", "penne",
-        "ramen", "rice-a-roni", "hamburger helper", "velveeta",
-        "kraft dinner", "uncle ben", "minute rice", "barilla",
-        "mac & cheese", "mac and cheese", "fettuccine", "linguine"
+        "pasta", "macaroni", "spaghetti", "penne", "fettuccine", "linguine",
+        "rice-a-roni", "hamburger helper", "kraft dinner",
+        "uncle ben", "minute rice", "barilla", "mac & cheese", "mac and cheese"
     ],
     "Condiments and Sauces": [
-        "ketchup", "mustard", "mayo", "mayonnaise", "sauce", "dressing",
-        "vinegar", "soy sauce", "hot sauce", "bbq", "barbecue",
-        "worcestershire", "tabasco", "heinz", "french's", "ranch"
+        "ketchup", "mustard", "mayonnaise", "salad dressing", "vinegar",
+        "soy sauce", "hot sauce", "bbq sauce", "barbecue sauce",
+        "worcestershire", "tabasco", "ranch dressing"
     ],
     "Dairy and Dairy Alternatives": [
-        "milk", "cheese", "yogurt", "butter", "cream", "almond milk",
-        "oat milk", "soy milk", "lactose", "dairy", "kraft singles",
-        "velveeta", "horizon", "silk", "chobani"
+        "whole milk", "skim milk", "2% milk", "almond milk", "oat milk",
+        "soy milk", "yogurt", "cheese", "chobani", "horizon organic",
+        "silk milk", "kraft singles", "cream cheese", "sour cream"
     ],
     "Desserts and Sweets": [
-        "cake", "cookie", "brownie", "candy", "chocolate", "sugar",
-        "frosting", "pudding", "jello", "gummy", "snack cake",
+        "cake mix", "cookies", "brownie", "candy", "chocolate bar",
+        "frosting", "pudding mix", "jello", "gummy bears", "snack cake",
         "little debbie", "hostess", "oreo", "chips ahoy"
     ],
     "Drinks": [
-        "juice", "water", "soda", "tea", "coffee", "drink", "beverage",
-        "lemonade", "gatorade", "kool-aid", "capri sun", "tropicana"
+        "juice", "lemonade", "gatorade", "kool-aid", "capri sun",
+        "tropicana", "sparkling water", "soda", "coca-cola", "pepsi",
+        "fruit punch", "apple juice", "orange juice", "grape juice"
     ],
     "Fresh Fruit": [
-        "apple", "banana", "orange", "grape", "strawberry", "blueberry",
-        "fresh fruit", "organic fruit", "pear", "peach", "melon"
+        "fresh apples", "fresh bananas", "fresh oranges", "fresh strawberries",
+        "organic apples", "organic bananas", "fresh fruit"
     ],
     "Fruits - Canned or Processed": [
-        "fruit cocktail", "mandarin", "pineapple", "peach", "pear",
-        "applesauce", "dole", "del monte", "fruit cup"
+        "fruit cocktail", "mandarin oranges", "pineapple chunks",
+        "applesauce", "dole fruit", "del monte fruit", "fruit cup",
+        "canned peach", "canned pear"
     ],
     "Granola Products": [
-        "granola", "oat", "nature valley", "quaker", "clif bar",
-        "kind bar", "trail mix", "muesli", "granola bar"
+        "granola", "granola bar", "nature valley", "clif bar",
+        "kind bar", "trail mix", "muesli", "quaker granola"
     ],
     "Meat and Poultry - Canned": [
         "spam", "vienna sausage", "canned chicken", "canned meat",
-        "corned beef", "potted meat", "libby", "armour", "hormel"
+        "corned beef", "potted meat", "hormel", "armour meat"
     ],
     "Meat and Poultry - Fresh": [
-        "chicken", "beef", "pork", "turkey", "ground meat", "steak",
-        "breast", "thigh", "drumstick", "sausage", "bacon",
-        "tyson", "perdue", "oscar mayer"
+        "chicken breast", "ground beef", "ground turkey", "pork chop",
+        "steak", "drumstick", "tyson chicken", "perdue chicken",
+        "oscar mayer", "bacon", "fresh sausage"
     ],
     "Nut Butters and Nuts": [
-        "peanut butter", "almond butter", "cashew", "nut", "jif",
-        "skippy", "peter pan", "planters", "mixed nuts"
+        "peanut butter", "almond butter", "cashew butter", "jif",
+        "skippy", "peter pan", "planters nuts", "mixed nuts", "roasted peanuts"
     ],
     "Ready Meals": [
-        "ready to eat", "microwaveable", "frozen dinner", "lean cuisine",
-        "stouffer", "hungry man", "banquet", "marie callender",
-        "hot pocket", "chef boyardee", "ravioli"
+        "lean cuisine", "stouffer", "hungry man", "banquet dinner",
+        "marie callender", "hot pocket", "chef boyardee", "ravioli",
+        "frozen dinner", "microwaveable meal", "ready to eat"
     ],
     "Savory Snacks and Crackers": [
         "chips", "crackers", "pretzels", "popcorn", "cheez-it",
-        "goldfish", "ritz", "triscuit", "doritos", "lays", "cheetos",
-        "pringles", "wheat thins", "saltine"
+        "goldfish crackers", "ritz crackers", "triscuit", "doritos",
+        "lays chips", "cheetos", "pringles", "wheat thins", "saltine"
     ],
     "Seafood - Canned": [
-        "tuna", "salmon", "sardine", "anchovy", "crab", "clam",
-        "starkist", "bumble bee", "chicken of the sea", "seafood"
+        "tuna", "canned salmon", "sardines", "starkist",
+        "bumble bee", "chicken of the sea", "canned seafood", "crab meat"
     ],
     "Soup": [
-        "soup", "broth", "chowder", "stew", "campbell", "progresso",
-        "chunky", "ramen", "cup of noodles", "chicken noodle"
+        "soup", "chicken noodle soup", "broth", "chowder",
+        "campbell's", "progresso", "chunky soup", "cup of noodles"
     ],
     "Vegetables - Canned": [
-        "corn", "peas", "green bean", "carrots", "mixed vegetables",
-        "del monte", "green giant", "libby", "canned vegetable"
+        "canned corn", "canned peas", "green beans", "mixed vegetables",
+        "del monte vegetables", "green giant", "canned carrots", "canned vegetable"
     ],
     "Vegetables - Fresh": [
-        "lettuce", "spinach", "kale", "broccoli", "celery", "onion",
-        "potato", "tomato", "pepper", "cucumber", "fresh vegetable"
+        "fresh lettuce", "fresh spinach", "fresh kale", "fresh broccoli",
+        "fresh celery", "fresh onion", "fresh potato", "fresh cucumber",
+        "fresh vegetable", "organic spinach", "organic kale"
     ],
 }
 
@@ -223,14 +239,27 @@ def classify_image_only(model, processor, image, device, amp_dtype=None):
         return {"items": []}, False
 
 
-def ocr_suggest_categories(ocr_text, existing_predictions, threshold=2):
+def clean_ocr_text(ocr_text):
+    """Remove blacklisted nutrition-label words from OCR text to reduce false positives."""
+    cleaned = ocr_text.lower()
+    for bl in OCR_BLACKLIST:
+        cleaned = cleaned.replace(bl, " ")
+    return cleaned
+
+
+def ocr_suggest_categories(ocr_text, existing_predictions, min_matches=2):
     """
     Analyze OCR text and suggest additional categories not already predicted.
+    
+    v3 fixes:
+    - Blacklist nutrition label text before matching
+    - Require min_matches (default 2) keyword hits per category
+    - More specific keywords (multi-word) to reduce false positives
     
     Args:
         ocr_text: Raw OCR output from the image
         existing_predictions: Set of categories already predicted by classifier
-        threshold: Minimum number of keyword matches to suggest a category
+        min_matches: Minimum number of keyword matches to suggest a category
     
     Returns:
         List of (category, confidence_score, matched_keywords) tuples
@@ -238,7 +267,9 @@ def ocr_suggest_categories(ocr_text, existing_predictions, threshold=2):
     if not ocr_text:
         return []
     
-    ocr_lower = ocr_text.lower()
+    # Clean OCR text: remove nutrition label boilerplate
+    ocr_cleaned = clean_ocr_text(ocr_text)
+    
     suggestions = []
     
     for category, keywords in OCR_CATEGORY_KEYWORDS.items():
@@ -247,11 +278,10 @@ def ocr_suggest_categories(ocr_text, existing_predictions, threshold=2):
         
         matched = []
         for kw in keywords:
-            # Check for keyword in OCR text (word boundary aware)
-            if kw.lower() in ocr_lower:
+            if kw.lower() in ocr_cleaned:
                 matched.append(kw)
         
-        if len(matched) >= 1:
+        if len(matched) >= min_matches:
             # Score: more matches = higher confidence
             score = min(len(matched) / 3.0, 1.0)  # Normalize to 0-1
             suggestions.append((category, score, matched))
@@ -261,11 +291,12 @@ def ocr_suggest_categories(ocr_text, existing_predictions, threshold=2):
     return suggestions
 
 
-def merge_predictions(image_pred, ocr_suggestions, min_ocr_score=0.3):
+def merge_predictions(image_pred, ocr_suggestions, min_ocr_score=0.5):
     """
     Merge image-only predictions with OCR-suggested categories.
     
     Only add OCR suggestions that meet the minimum score threshold.
+    v3: raised min_ocr_score to 0.5 (need 2+ matches to reach this)
     """
     items = list(image_pred.get("items", []))
     existing = {normalize_category(item.get("name", "")) for item in items}
@@ -379,8 +410,10 @@ def main():
     parser.add_argument("--jsonl", type=str, default="./florence2_data/test_v5.jsonl")
     parser.add_argument("--output", type=str, default="./eval_results_ocr_input_v2.json")
     parser.add_argument("--bf16", action="store_true")
-    parser.add_argument("--min-ocr-score", type=float, default=0.3,
-                        help="Minimum OCR keyword score to add a suggestion")
+    parser.add_argument("--min-ocr-score", type=float, default=0.5,
+                        help="Minimum OCR keyword score to add a suggestion (0.67 = 2+ matches)")
+    parser.add_argument("--min-matches", type=int, default=2,
+                        help="Minimum keyword matches per category to suggest")
     parser.add_argument("--max-samples", type=int, default=None)
     args = parser.parse_args()
     
@@ -456,7 +489,7 @@ def main():
         
         # Step 3: OCR-based category suggestions
         existing_preds = {normalize_category(it.get("name", "")) for it in pred_img.get("items", [])}
-        ocr_suggestions = ocr_suggest_categories(ocr_text, existing_preds)
+        ocr_suggestions = ocr_suggest_categories(ocr_text, existing_preds, min_matches=args.min_matches)
         
         # Step 4: Merge
         merged = merge_predictions(pred_img, ocr_suggestions, min_ocr_score=args.min_ocr_score)
