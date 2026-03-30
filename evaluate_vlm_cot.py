@@ -279,30 +279,21 @@ def main():
     
     from transformers import AutoModelForImageTextToText, AutoProcessor
     
-    # Use flash_attention_2 if available, else sdpa (both save massive VRAM vs eager)
-    try:
-        model = AutoModelForImageTextToText.from_pretrained(
-            args.model,
-            torch_dtype=torch.bfloat16 if args.bf16 else torch.float32,
-            device_map="auto",
-            attn_implementation="flash_attention_2",
-        )
-        print("  Using flash_attention_2")
-    except Exception:
-        model = AutoModelForImageTextToText.from_pretrained(
-            args.model,
-            torch_dtype=torch.bfloat16 if args.bf16 else torch.float32,
-            device_map="auto",
-            attn_implementation="sdpa",
-        )
-        print("  Using sdpa attention")
+    # Use sdpa attention (saves massive VRAM vs eager)
+    model = AutoModelForImageTextToText.from_pretrained(
+        args.model,
+        torch_dtype=torch.bfloat16 if args.bf16 else torch.float32,
+        device_map="auto",
+        attn_implementation="sdpa",
+    )
+    print("  Using sdpa attention")
     
     # Limit image resolution to avoid OOM on vision encoder
-    # Default Qwen2.5-VL max_pixels=1003520 → reduce to ~500K pixels
+    # Default Qwen2.5-VL max_pixels=1003520 → reduce to ~200K pixels
     processor = AutoProcessor.from_pretrained(
         args.model,
-        min_pixels=256*28*28,    # ~200K
-        max_pixels=512*28*28,    # ~401K (much less VRAM)
+        min_pixels=128*28*28,    # ~100K
+        max_pixels=256*28*28,    # ~200K (aggressive reduction for 40GB GPU)
     )
     model.eval()
     print("  Model loaded ✓")
