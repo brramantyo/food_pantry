@@ -408,7 +408,8 @@ def main():
     print(f"  {'-'*40} {'-'*9}")
     print(f"  {'Vanilla Florence-2 (zero-shot)':<40} {'27.4%':>9}")
     print(f"  {'Fine-tuned Florence-2 (v11)':<40} {'76.5%':>9}")
-    print(f"  {f'{args.model.split(\"/\")[-1]} (CoT, zero-shot)':<40} {metrics['micro_f1']:>8.1%}")
+    model_short = args.model.split("/")[-1]
+    print(f"  {f'{model_short} (CoT, zero-shot)':<40} {metrics['micro_f1']:>8.1%}")
     
     # ── Sample CoT outputs ─────────────────────────────────────────────
     print(f"\n{'='*70}")

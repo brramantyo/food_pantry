@@ -2,7 +2,7 @@
 #SBATCH --job-name=con_v2a
 #SBATCH --partition=general
 #SBATCH --gres=gpu:1
-#SBATCH --time=02:00:00
+#SBATCH --time=03:00:00
 #SBATCH --mem=32G
 #SBATCH --output=contrastive_v2a_%j.log
 
