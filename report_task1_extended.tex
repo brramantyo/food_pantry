@@ -1,0 +1,103 @@
+\section{Task 1: Extended Experiments and Ablation Studies}
+\label{sec:task1_extended}
+
+Following the initial fine-tuning results (Section~\ref{sec:task1}), we conducted several additional experiments to explore alternative approaches suggested in the literature and by collaborators. All experiments are evaluated on the same 166-image test set.
+
+\subsection{Summary of All Approaches}
+
+Table~\ref{tab:all_approaches} summarizes all approaches evaluated for Task 1.
+
+\begin{table}[h]
+\centering
+\caption{Complete comparison of Task 1 classification approaches}
+\label{tab:all_approaches}
+\small
+\begin{tabular}{lcccc}
+\toprule
+Approach & Micro P & Micro R & Micro F1 & Note \\
+\midrule
+Vanilla Florence-2 (zero-shot) & 54.1\% & 18.3\% & 27.4\% & Baseline \\
+Fine-tuned v6 (vision+decoder LoRA) & 84.4\% & 62.5\% & 71.9\% & \\
+Mixed-data fine-tuning (v9) & 80.2\% & 70.9\% & 75.3\% & \\
+Continued fine-tuning (v11) & 83.5\% & 70.5\% & \textbf{76.5\%} & Best \\
+v9+v11 ensemble (union) & --- & --- & 76.1\% & Marginal \\
+Conservative multi-label (v12b) & --- & --- & 75.9\% & Tied \\
+\midrule
+\multicolumn{5}{l}{\textit{Alternative approaches (explored but did not improve)}} \\
+\midrule
+Detection-first (vanilla OD $\rightarrow$ classify) & --- & --- & 52.2\% & \S\ref{ssec:detect_first} \\
+Fine-tuned OD labels only & --- & --- & $\sim$40\% & \S\ref{ssec:finetuned_od} \\
+Fine-tuned OD $\rightarrow$ crop $\rightarrow$ v11 & 41.7\% & 87.2\% & 56.4\% & \S\ref{ssec:od_crop_classify} \\
+OCR input signal (v2) & --- & --- & 48.4\% & \S\ref{ssec:ocr} \\
+OCR input signal (v3, conservative) & --- & --- & $\sim$+2\% & \S\ref{ssec:ocr} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Detection-First Pipeline}
+\label{ssec:detect_first}
+
+\textbf{Motivation.} Since under-detection in multi-label images is the main bottleneck, we hypothesized that first detecting individual objects and then classifying each crop might improve recall.
+
+\textbf{Method.} We tested two variants: (1) using vanilla Florence-2's \texttt{<OD>} task for detection followed by v11 classification on each crop, and (2) using a fine-tuned OD model.
+
+\textbf{Vanilla OD $\rightarrow$ v11 classify.} The vanilla Florence-2 object detector produces generic bounding boxes that do not correspond to pantry categories. Combined with v11 classification on crops, this achieved only 52.2\% micro F1, substantially below direct classification.
+
+\subsection{Fine-Tuned Object Detection}
+\label{ssec:finetuned_od}
+
+\textbf{Method.} We fine-tuned Florence-2 on the \texttt{<OD>} task using COCO-format bounding box annotations from the training set (10,004 annotations across 21 categories, 15 epochs).
+
+\textbf{Results.} When using the OD model's predicted labels directly as classification output, 7 out of 21 categories achieved 0\% F1. Inspection of the raw output revealed label hallucination (e.g., ``Seafoam -- Fresh'' instead of ``Seafood -- Canned''), indicating that the OD model learned approximate bounding box locations but not stable category labels.
+
+\subsection{Fine-Tuned OD $\rightarrow$ Crop $\rightarrow$ v11 Classify}
+\label{ssec:od_crop_classify}
+
+\textbf{Motivation.} Since the fine-tuned OD model produces reasonable bounding boxes even though its labels are unreliable, we combined it with v11: use OD for localization only (ignoring labels), crop each detection, and classify each crop with v11.
+
+\textbf{Method.} The pipeline applies NMS-based deduplication (IoU $> 0.5$), crops each detection with 15\% padding, classifies with v11, and merges with full-image classification as fallback.
+
+\textbf{Results.}
+
+\begin{table}[h]
+\centering
+\caption{Ablation: OD $\rightarrow$ crop $\rightarrow$ classify pipeline}
+\label{tab:od_ablation}
+\begin{tabular}{lcccc}
+\toprule
+Method & Micro P & Micro R & Micro F1 & Macro F1 \\
+\midrule
+Full image only (v11 baseline) & 83.5\% & 70.5\% & 76.5\% & 75.7\% \\
+Crops only & 41.6\% & 83.3\% & 55.5\% & 57.1\% \\
+Full image + crops (union) & 41.7\% & 87.2\% & 56.4\% & 57.7\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The crops-based approach dramatically improves recall (70.5\% $\rightarrow$ 87.2\%), confirming that the OD model successfully detects items that v11 misses on the full image. However, precision drops from 83.5\% to 41.7\%, because v11 was trained on full pantry shelf images and over-predicts when given small crops of individual items. The net F1 is substantially lower than direct classification.
+
+\textbf{Key insight:} The detection stage works well for localization, but the classifier is not trained for single-item crops. Retraining the classifier on cropped items could potentially recover precision, but would require generating a new training dataset of individual item crops.
+
+\subsection{OCR-Based Input Signal}
+\label{ssec:ocr}
+
+\textbf{Motivation.} Package text (brand names, product descriptions) contains discriminative information that image-only classification may miss. We explored using Florence-2's \texttt{<REGION\_TO\_OCR>} capability as an additional input signal.
+
+\textbf{Method.} Two variants were tested:
+\begin{enumerate}[nosep,leftmargin=1.5em]
+  \item \textbf{v2 (aggressive):} OCR text matched against a broad keyword list, boosting any matched categories. This was too noisy and \textit{decreased} F1 from 57.6\% to 48.4\%.
+  \item \textbf{v3 (conservative):} Added a blacklist for nutrition label text, required multi-word keywords, and required $\geq$2 keyword matches per category. This improved 3 categories (Granola +50\% F1, Savory Snacks +9.4\%, Soup +6.8\%) while minimally impacting others.
+\end{enumerate}
+
+\textbf{Conclusion.} OCR as a post-processing signal provides modest gains for select categories but is not a reliable general strategy. The main difficulty is distinguishing informative package text from noise (nutrition labels, legal text, barcodes).
+
+\subsection{Discussion}
+
+Across all alternative approaches, direct generative classification with the fine-tuned Florence-2 model (v11) remained the strongest single method at 76.5\% micro F1. The main findings from the extended experiments are:
+
+\begin{enumerate}[nosep,leftmargin=1.5em]
+  \item \textbf{Detection improves recall but destroys precision.} OD-based pipelines can find more items but the classifier over-predicts on small crops, yielding lower overall F1.
+  \item \textbf{OCR provides marginal gains.} Text-based signals help for a few categories but introduce too much noise for reliable general use.
+  \item \textbf{Generative classification is surprisingly robust.} Despite the multi-label challenge, the generative approach outperforms modular pipelines that decompose the task into detection + classification stages.
+  \item \textbf{The remaining bottleneck is data, not architecture.} Class imbalance and limited multi-label training examples constrain performance more than model capacity.
+\end{enumerate}

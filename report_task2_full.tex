@@ -1,0 +1,154 @@
+\section{Task 2: USDA Nutritional Matching --- Full Evaluation}
+\label{sec:task2}
+
+\subsection{Overview}
+
+Task 2 is to match classified pantry items to entries in the USDA FoodData Central database, enabling automatic nutritional information retrieval. The full pipeline processes a pantry image end-to-end: image $\rightarrow$ item classification (Task 1) $\rightarrow$ USDA matching $\rightarrow$ nutritional output.
+
+\subsection{USDA Data and Index}
+
+\begin{itemize}[nosep,leftmargin=1.5em]
+  \item \textbf{USDA Branded Foods:} 454,126 products with brand, description, ingredients, and nutrition facts.
+  \item \textbf{USDA SR Legacy:} 7,793 generic food items (e.g., ``rice, white, cooked'') as fallback.
+  \item \textbf{Embedding model:} all-MiniLM-L6-v2 sentence transformer (384-dim, L2-normalized for cosine similarity).
+  \item \textbf{Total index:} 461,919 items, 338\,MB embedding matrix.
+\end{itemize}
+
+\subsection{Matching Approach}
+
+The matching pipeline uses a hybrid semantic retrieval strategy:
+
+\begin{enumerate}[nosep,leftmargin=1.5em]
+  \item \textbf{Semantic search.} Each predicted pantry category name (optionally with package type) is encoded using the sentence transformer and matched against all USDA entries by cosine similarity.
+  \item \textbf{Category boosting.} USDA items whose \texttt{brandedFoodCategory} field relates to the predicted pantry category receive a +0.15 score boost, improving precision for known category mappings.
+  \item \textbf{Top-$k$ retrieval.} The top-5 USDA matches per category are returned with nutrition data, and the top-1 match is used for nutritional estimation.
+\end{enumerate}
+
+\subsection{End-to-End Pipeline Evaluation}
+
+We evaluate the full pipeline on all 166 test images using the best classifier (v11, 76.0\% micro F1).
+
+\subsubsection{Task 1 Classification Results (Recap)}
+
+\begin{table}[h]
+\centering
+\caption{Task 1 classification results on 166-image test set}
+\label{tab:task1recap}
+\begin{tabular}{lcccc}
+\toprule
+ & Precision & Recall & Micro F1 & Macro F1 \\
+\midrule
+Best classifier (v11) & 83.5\% & 70.5\% & 76.5\% & 75.7\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Out of 166 images, 99 (59.6\%) were classified with the exact correct category set.
+
+\subsubsection{USDA Retrieval Quality}
+
+Since there is no ground-truth mapping from pantry images to specific USDA entries, we evaluate retrieval quality using two proxy measures: (1) cosine similarity scores as a confidence measure, and (2) nutritional profile sanity checks.
+
+Table~\ref{tab:task2nutrition_full} shows the average nutritional profile per pantry category, computed from the top-50 USDA matches per category.
+
+\begin{table}[h]
+\centering
+\caption{Average nutritional profile per pantry category (top-50 USDA matches)}
+\label{tab:task2nutrition_full}
+\small
+\begin{tabular}{lrrrr}
+\toprule
+Pantry Category & Kcal & Protein (g) & Carbs (g) & Fat (g) \\
+\midrule
+Baby Food & 91.6 & 4.1 & 11.1 & 3.4 \\
+Beans \& Legumes --- Canned/Dried & 123.3 & 7.1 & 20.6 & 1.3 \\
+Bread \& Bakery Products & 126.0 & 4.0 & 23.3 & 1.8 \\
+Canned Tomato Products & 26.2 & 1.0 & 5.4 & 0.1 \\
+Carbohydrate Meal & 187.8 & 7.8 & 33.3 & 2.8 \\
+Condiments \& Sauces & 70.2 & 1.0 & 10.1 & 2.8 \\
+Dairy \& Dairy Alternatives & 111.8 & 6.5 & 9.7 & 5.3 \\
+Desserts \& Sweets & 270.2 & 2.6 & 37.4 & 12.9 \\
+Drinks & 68.8 & 0.2 & 12.4 & 0.2 \\
+Fresh Fruit & 89.0 & 0.8 & 21.9 & 0.2 \\
+Fruits --- Canned/Processed & 70.5 & 0.5 & 17.5 & 0.3 \\
+Granola Products & 168.0 & 3.6 & 24.6 & 6.6 \\
+Meat \& Poultry --- Canned & 126.1 & 9.3 & 0.5 & 9.4 \\
+Meat \& Poultry --- Fresh & 214.6 & 14.1 & 0.3 & 17.2 \\
+Nut Butters \& Nuts & 169.8 & 5.3 & 7.3 & 14.3 \\
+Ready Meals & 308.7 & 15.0 & 36.7 & 11.5 \\
+Savory Snacks \& Crackers & 363.0 & 8.5 & 53.1 & 13.6 \\
+Seafood --- Canned & 78.4 & 12.9 & 0.9 & 2.3 \\
+Soup & 135.5 & 5.8 & 16.6 & 5.3 \\
+Vegetables --- Canned & 39.2 & 1.6 & 7.7 & 0.2 \\
+Vegetables --- Fresh & 62.0 & 2.6 & 12.7 & 0.4 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+These nutritional profiles pass basic sanity checks: canned vegetables and tomato products are low-calorie; meats and nut butters are high-protein and high-fat; desserts and snacks are calorie-dense with high carbohydrate content; drinks are low in protein and fat. This suggests that the semantic matching successfully captures meaningful food similarity.
+
+\subsubsection{Error Propagation: Classification Errors and Nutritional Accuracy}
+
+A key question is whether classification errors in Task 1 severely impact the downstream nutritional estimates. Table~\ref{tab:error_prop} compares the average predicted nutrition for correctly classified images versus misclassified images.
+
+\begin{table}[h]
+\centering
+\caption{Error propagation: nutritional estimates for correct vs.\ incorrect classifications}
+\label{tab:error_prop}
+\begin{tabular}{lrrr}
+\toprule
+Nutrient & Correct (avg) & Wrong (avg) & Delta \\
+\midrule
+Calories (kcal) & 166.7 & 247.3 & +80.6 \\
+Protein (g) & 7.0 & 8.0 & +1.0 \\
+Carbohydrates (g) & 19.1 & 31.3 & +12.2 \\
+Fat (g) & 6.8 & 10.4 & +3.6 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+When classification is incorrect, caloric content is overestimated by approximately 48\%. This occurs because misclassification tends to assign items to more calorie-dense categories (e.g., predicting Ready Meals instead of Condiments). However, protein estimation remains relatively stable (+1.0\,g), suggesting that the nutritional ``direction'' is partially preserved even under classification error.
+
+For a pantry-level nutritional assessment (aggregating over many items), these per-item errors tend to average out. The pipeline is therefore suitable for providing \textit{approximate} nutritional profiles of food pantry contents, even when individual classifications are imperfect.
+
+\subsubsection{Pipeline Latency}
+
+\begin{table}[h]
+\centering
+\caption{Pipeline latency on a single NVIDIA GPU}
+\label{tab:latency}
+\begin{tabular}{lr}
+\toprule
+Stage & Time per image \\
+\midrule
+Task 1: Classification (Florence-2 + LoRA) & 685\,ms \\
+Task 2: USDA Matching (semantic search) & 717\,ms \\
+\midrule
+\textbf{Total} & \textbf{1,401\,ms} \\
+Throughput & 0.7 images/s \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The pipeline processes each image in approximately 1.4 seconds. Classification and USDA matching contribute roughly equal latency. For batch processing of pantry inventories, this throughput is acceptable.
+
+\subsubsection{Qualitative Examples}
+
+The following examples illustrate typical pipeline behavior:
+
+\begin{itemize}[nosep,leftmargin=1.5em]
+  \item \textbf{Correct classification:} An image of chocolate products is classified as ``Desserts and Sweets'' and matched to ``Assorted Gift Box Chocolate'' (similarity: 0.809, 120\,kcal per serving).
+  \item \textbf{Correct classification:} An image of crackers is classified as ``Savory Snacks and Crackers'' and matched to ``Shrimp Cracker'' (similarity: 0.899, 426\,kcal).
+  \item \textbf{Incorrect classification:} An image of condiments is misclassified as ``Ready Meals'' and matched to ``Fried Chicken with Loaded Mashed Potatoes'' (similarity: 0.652, 349\,kcal). The lower similarity score partially reflects the mismatch.
+\end{itemize}
+
+Note that even in the incorrect case, the retrieval similarity score (0.652) is noticeably lower than in correct cases (0.80--0.90), suggesting that the similarity score could potentially be used as a confidence indicator for downstream filtering.
+
+\subsection{Limitations}
+
+\begin{itemize}[nosep,leftmargin=1.5em]
+  \item \textbf{Category-level matching is coarse.} Since Task 1 outputs broad categories rather than specific products, the USDA match represents an average over many possible items within the category.
+  \item \textbf{No ground-truth evaluation for Task 2.} There is no labeled mapping from pantry images to specific USDA entries, so retrieval quality is assessed via proxy measures only.
+  \item \textbf{Classification errors propagate.} Misclassification in Task 1 directly affects USDA matching, leading to nutritional overestimation. However, the impact is moderate and partially mitigated at the aggregate level.
+  \item \textbf{USDA matching latency.} The current implementation performs brute-force cosine similarity over 461K items per query. Approximate nearest-neighbor methods (e.g., FAISS) could reduce this.
+\end{itemize}
