@@ -26,24 +26,26 @@ The matching pipeline uses a hybrid semantic retrieval strategy:
 
 \subsection{End-to-End Pipeline Evaluation}
 
-We evaluate the full pipeline on all 166 test images using the best classifier (v11, 76.0\% micro F1).
+We evaluate the full pipeline on all 166 test images using two Task~1 configurations: (1) the best single classifier (v11) and (2) an ensemble union combining v11 with a supervised contrastive classifier (see Section~\ref{sec:contrastive}). This allows us to examine the trade-off between classification accuracy and downstream nutritional estimation.
 
-\subsubsection{Task 1 Classification Results (Recap)}
+\subsubsection{Task 1 Classification Configurations}
 
 \begin{table}[h]
 \centering
-\caption{Task 1 classification results on 166-image test set}
-\label{tab:task1recap}
+\caption{Task 1 classifiers used for pipeline evaluation}
+\label{tab:task1configs}
 \begin{tabular}{lcccc}
 \toprule
- & Precision & Recall & Micro F1 & Macro F1 \\
+Method & Precision & Recall & Micro F1 & Macro F1 \\
 \midrule
-Best classifier (v11) & 83.5\% & 70.5\% & 76.5\% & 75.7\% \\
+v11 single model (generative) & 82.2\% & 70.1\% & 75.7\% & 74.8\% \\
+Contrastive only (discriminative) & 81.4\% & 74.9\% & 78.0\% & 71.5\% \\
+\textbf{Ensemble union (v11 $\cup$ contrastive)} & \textbf{77.2\%} & \textbf{83.7\%} & \textbf{80.3\%} & \textbf{78.4\%} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-Out of 166 images, 99 (59.6\%) were classified with the exact correct category set.
+The ensemble union achieves the highest F1 (80.3\%) by combining predictions from both models: if \emph{either} model predicts a category, it is included. This substantially boosts recall (83.7\% vs.\ 70.1\%) at a modest cost to precision (77.2\% vs.\ 82.2\%).
 
 \subsubsection{USDA Retrieval Quality}
 
@@ -89,27 +91,33 @@ These nutritional profiles pass basic sanity checks: canned vegetables and tomat
 
 \subsubsection{Error Propagation: Classification Errors and Nutritional Accuracy}
 
-A key question is whether classification errors in Task 1 severely impact the downstream nutritional estimates. Table~\ref{tab:error_prop} compares the average predicted nutrition for correctly classified images versus misclassified images.
+A key question is whether classification errors in Task 1 severely impact the downstream nutritional estimates. Table~\ref{tab:error_prop} compares the average predicted nutrition for correctly classified images versus misclassified images under both pipeline configurations.
 
 \begin{table}[h]
 \centering
 \caption{Error propagation: nutritional estimates for correct vs.\ incorrect classifications}
 \label{tab:error_prop}
-\begin{tabular}{lrrr}
+\begin{tabular}{lrrr|rrr}
 \toprule
-Nutrient & Correct (avg) & Wrong (avg) & Delta \\
+ & \multicolumn{3}{c|}{v11 Single Model} & \multicolumn{3}{c}{Ensemble Union} \\
+Nutrient & Correct & Wrong & $\Delta$ & Correct & Wrong & $\Delta$ \\
 \midrule
-Calories (kcal) & 166.7 & 247.3 & +80.6 \\
-Protein (g) & 7.0 & 8.0 & +1.0 \\
-Carbohydrates (g) & 19.1 & 31.3 & +12.2 \\
-Fat (g) & 6.8 & 10.4 & +3.6 \\
+Calories (kcal) & 166.7 & 247.3 & +80.6 & 192.6 & 396.5 & +203.9 \\
+Protein (g) & 7.0 & 8.0 & +1.0 & 8.2 & 13.7 & +5.5 \\
+Carbohydrates (g) & 19.1 & 31.3 & +12.2 & 22.7 & 46.9 & +24.2 \\
+Fat (g) & 6.8 & 10.4 & +3.6 & 7.8 & 17.7 & +9.9 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-When classification is incorrect, caloric content is overestimated by approximately 48\%. This occurs because misclassification tends to assign items to more calorie-dense categories (e.g., predicting Ready Meals instead of Condiments). However, protein estimation remains relatively stable (+1.0\,g), suggesting that the nutritional ``direction'' is partially preserved even under classification error.
+The two configurations reveal a clear \textbf{coverage--accuracy trade-off}:
 
-For a pantry-level nutritional assessment (aggregating over many items), these per-item errors tend to average out. The pipeline is therefore suitable for providing \textit{approximate} nutritional profiles of food pantry contents, even when individual classifications are imperfect.
+\begin{itemize}[nosep,leftmargin=1.5em]
+  \item \textbf{v11 single model} provides conservative estimates. When classification is wrong, caloric overestimation is moderate (+81\,kcal, approximately 48\%) and protein estimation remains stable (+1.0\,g). However, with only 70.1\% recall, approximately 30\% of items in each image are missed entirely, leading to systematic \textit{underestimation} of total pantry nutrition.
+  \item \textbf{Ensemble union} detects significantly more items (83.7\% recall), reducing the risk of missing pantry contents. However, false positive categories cause larger overestimation when wrong (+204\,kcal), because the union of two models predicts more categories per image.
+\end{itemize}
+
+The choice between configurations depends on the application context. For \textbf{individual item accuracy} and comprehensive pantry assessment, the ensemble is preferred because missing items entirely (underestimation) is more problematic than overestimation for nutritional counseling. For \textbf{conservative per-item estimates} where false positives are costly, the single model is safer. In practice, the ensemble's higher recall means fewer missed items, and its errors tend to be in the direction of \textit{overestimation}, which is generally the safer failure mode for food assistance programs.
 
 \subsubsection{Pipeline Latency}
 
@@ -117,20 +125,20 @@ For a pantry-level nutritional assessment (aggregating over many items), these p
 \centering
 \caption{Pipeline latency on a single NVIDIA GPU}
 \label{tab:latency}
-\begin{tabular}{lr}
+\begin{tabular}{lrr}
 \toprule
-Stage & Time per image \\
+Stage & v11 Only & Ensemble Union \\
 \midrule
-Task 1: Classification (Florence-2 + LoRA) & 685\,ms \\
-Task 2: USDA Matching (semantic search) & 717\,ms \\
+Task 1: Classification & 685\,ms & 842\,ms \\
+Task 2: USDA Matching & 717\,ms & 896\,ms \\
 \midrule
-\textbf{Total} & \textbf{1,401\,ms} \\
-Throughput & 0.7 images/s \\
+\textbf{Total} & \textbf{1,401\,ms} & \textbf{1,737\,ms} \\
+Throughput & 0.7 img/s & 0.6 img/s \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-The pipeline processes each image in approximately 1.4 seconds. Classification and USDA matching contribute roughly equal latency. For batch processing of pantry inventories, this throughput is acceptable.
+The ensemble adds approximately 24\% latency overhead due to running two models (v11 generative + contrastive discriminative). Both configurations are suitable for batch processing of pantry inventories. The USDA matching stage takes longer for the ensemble because more categories are predicted per image on average.
 
 \subsubsection{Qualitative Examples}
 
