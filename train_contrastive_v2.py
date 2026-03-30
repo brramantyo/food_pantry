@@ -1,0 +1,946 @@
+#!/usr/bin/env python3
+"""
+train_contrastive_v2.py
+=======================
+Supervised Contrastive Learning v2 — Improved hyperparams + partial unfreeze.
+
+Changes from v1:
+  - Partial unfreeze: optionally unfreeze last N encoder layers
+  - Auto threshold tuning on validation set (sweep per-class thresholds)
+  - Larger batch support for better contrastive learning
+  - Lower alpha (less SupCon weight, more BCE) since SupCon loss was dominant
+  - Gradient accumulation for effective larger batches
+
+Architecture:
+  Florence-2 Vision Encoder (frozen)
+    → Global Average Pool (feature dim)
+    → Projection Head (feature_dim → 256 → 128)  [for SupCon loss]
+    → Classification Head (feature_dim → 21)       [for CE loss]
+
+Loss = α * SupCon_loss + (1-α) * BCE_loss
+
+Usage:
+  python train_contrastive.py \
+    --base-model microsoft/Florence-2-large-ft \
+    --data-dir . \
+    --jsonl-dir ./florence2_data \
+    --output-dir ./checkpoints_contrastive \
+    --epochs 30 \
+    --bf16
+"""
+
+import argparse
+import json
+import os
+import random
+import sys
+import time
+import math
+from collections import Counter
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torchvision.transforms.functional as TF
+from PIL import Image, ImageEnhance, ImageFilter
+from torch.utils.data import Dataset, DataLoader
+from transformers import AutoModelForCausalLM, AutoProcessor
+from transformers import get_cosine_schedule_with_warmup
+
+
+# ── Categories ─────────────────────────────────────────────────────────────────
+
+CATEGORIES = [
+    "Baby Food",
+    "Beans and Legumes - Canned or Dried",
+    "Bread and Bakery Products",
+    "Canned Tomato Products",
+    "Carbohydrate Meal",
+    "Condiments and Sauces",
+    "Dairy and Dairy Alternatives",
+    "Desserts and Sweets",
+    "Drinks",
+    "Fresh Fruit",
+    "Fruits - Canned or Processed",
+    "Granola Products",
+    "Meat and Poultry - Canned",
+    "Meat and Poultry - Fresh",
+    "Nut Butters and Nuts",
+    "Ready Meals",
+    "Savory Snacks and Crackers",
+    "Seafood - Canned",
+    "Soup",
+    "Vegetables - Canned",
+    "Vegetables - Fresh",
+]
+
+CAT2IDX = {c: i for i, c in enumerate(CATEGORIES)}
+IDX2CAT = {i: c for c, i in CAT2IDX.items()}
+NUM_CLASSES = len(CATEGORIES)
+
+CANONICAL_MAP = {c.lower(): c for c in CATEGORIES}
+
+
+def normalize_category(name):
+    return CANONICAL_MAP.get(name.lower().strip(), name)
+
+
+# ── Augmentation ───────────────────────────────────────────────────────────────
+
+class PantryAugmentation:
+    """Data augmentation for contrastive learning — need strong augs for good representations."""
+    
+    def __init__(self, p=0.8):
+        self.p = p
+    
+    def __call__(self, image):
+        if random.random() > self.p:
+            return image
+        
+        if random.random() < 0.5:
+            image = TF.hflip(image)
+        
+        if random.random() < 0.4:
+            angle = random.uniform(-25, 25)
+            image = TF.rotate(image, angle, fill=128)
+        
+        if random.random() < 0.6:
+            factor = random.uniform(0.5, 1.5)
+            image = ImageEnhance.Brightness(image).enhance(factor)
+        
+        if random.random() < 0.6:
+            factor = random.uniform(0.5, 1.5)
+            image = ImageEnhance.Contrast(image).enhance(factor)
+        
+        if random.random() < 0.5:
+            factor = random.uniform(0.5, 1.5)
+            image = ImageEnhance.Color(image).enhance(factor)
+        
+        if random.random() < 0.3:
+            image = image.filter(ImageFilter.GaussianBlur(radius=random.uniform(0.5, 2.5)))
+        
+        # Random crop + resize
+        if random.random() < 0.4:
+            w, h = image.size
+            crop_frac = random.uniform(0.7, 0.95)
+            new_w, new_h = int(w * crop_frac), int(h * crop_frac)
+            left = random.randint(0, w - new_w)
+            top = random.randint(0, h - new_h)
+            image = image.crop((left, top, left + new_w, top + new_h))
+            image = image.resize((w, h), Image.BILINEAR)
+        
+        return image
+
+
+# ── Dataset ────────────────────────────────────────────────────────────────────
+
+class PantryContrastiveDataset(Dataset):
+    """
+    Dataset that returns 2 augmented views + multi-hot label vector.
+    """
+    
+    def __init__(self, jsonl_path, data_dir, processor, augment=False, 
+                 oversample=True, min_samples_per_class=20):
+        self.data_dir = data_dir
+        self.processor = processor
+        self.augment = PantryAugmentation(p=0.8) if augment else None
+        
+        raw_samples = []
+        with open(jsonl_path, "r", encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    raw_samples.append(json.loads(line))
+        
+        self.samples = []
+        class_counts = Counter()
+        
+        for s in raw_samples:
+            try:
+                target = json.loads(s["target"])
+                items = target.get("items", [])
+                cats = set()
+                for item in items:
+                    name = normalize_category(item.get("name", ""))
+                    if name in CAT2IDX:
+                        cats.add(name)
+                
+                if cats:
+                    self.samples.append({
+                        "image": s["image"],
+                        "categories": sorted(cats),
+                    })
+                    for c in cats:
+                        class_counts[c] += 1
+            except (json.JSONDecodeError, KeyError):
+                pass
+        
+        print(f"  Loaded {len(self.samples)} samples from {jsonl_path}")
+        
+        if oversample and min_samples_per_class > 0:
+            self.samples = self._oversample(self.samples, class_counts, min_samples_per_class)
+            print(f"  After oversampling: {len(self.samples)} samples")
+    
+    def _oversample(self, samples, class_counts, min_samples):
+        class_samples = {}
+        for s in samples:
+            for c in s["categories"]:
+                if c not in class_samples:
+                    class_samples[c] = []
+                class_samples[c].append(s)
+        
+        extra = []
+        for cls, count in class_counts.items():
+            if count < min_samples and cls in class_samples:
+                needed = min_samples - count
+                pool = class_samples[cls]
+                for _ in range(needed):
+                    extra.append(random.choice(pool))
+        
+        return samples + extra
+    
+    def __len__(self):
+        return len(self.samples)
+    
+    def __getitem__(self, idx):
+        sample = self.samples[idx]
+        img_rel = sample["image"].replace("\\", "/")
+        img_path = os.path.join(self.data_dir, img_rel)
+        
+        image = Image.open(img_path).convert("RGB")
+        
+        if self.augment:
+            view1 = self.augment(image)
+            view2 = self.augment(image)
+        else:
+            view1 = image
+            view2 = image
+        
+        inputs1 = self.processor(text="<OD>", images=view1, return_tensors="pt")
+        inputs2 = self.processor(text="<OD>", images=view2, return_tensors="pt")
+        
+        label = torch.zeros(NUM_CLASSES)
+        for c in sample["categories"]:
+            label[CAT2IDX[c]] = 1.0
+        
+        return {
+            "pixel_values_1": inputs1["pixel_values"].squeeze(0),
+            "pixel_values_2": inputs2["pixel_values"].squeeze(0),
+            "input_ids": inputs1["input_ids"].squeeze(0),
+            "label": label,
+        }
+
+
+# ── Model ──────────────────────────────────────────────────────────────────────
+
+class ContrastiveClassifier(nn.Module):
+    """
+    Florence-2 (frozen) + Projection Head + Classification Head.
+    
+    Florence-2 architecture:
+      - Vision Tower (DaViT) processes pixel_values → image features
+      - Image projection maps vision features → encoder embedding space
+      - Text encoder processes input_ids + projected image features
+    
+    We use the FULL model to get encoder outputs (which include vision info),
+    then pool and classify. The entire Florence-2 model is frozen.
+    """
+    
+    def __init__(self, florence_model, feature_dim, proj_dim=128, num_classes=21, 
+                 unfreeze_layers=0):
+        super().__init__()
+        
+        # Keep the FULL Florence-2 model for feature extraction
+        # (need vision tower + projection + encoder together)
+        self.florence = florence_model
+        
+        # Freeze EVERYTHING in Florence-2 first
+        for param in self.florence.parameters():
+            param.requires_grad = False
+        
+        # Optionally unfreeze last N encoder layers
+        if unfreeze_layers > 0:
+            # Get encoder layers
+            encoder = self.florence.get_encoder()
+            if hasattr(encoder, 'layers'):
+                layers = list(encoder.layers)
+            elif hasattr(encoder, 'layer'):
+                layers = list(encoder.layer)
+            elif hasattr(encoder, 'blocks'):
+                layers = list(encoder.blocks)
+            else:
+                # Try to find layer-like modules
+                layers = [m for name, m in encoder.named_children() 
+                          if 'layer' in name.lower() or 'block' in name.lower()]
+            
+            if layers:
+                for layer in layers[-unfreeze_layers:]:
+                    for param in layer.parameters():
+                        param.requires_grad = True
+                print(f"  Unfroze last {unfreeze_layers} encoder layers ({len(layers)} total)")
+            else:
+                print(f"  WARNING: Could not find encoder layers to unfreeze. Trying model.language_model...")
+                # Florence-2 specific: try unfreezing last layers of the language model
+                if hasattr(self.florence, 'language_model'):
+                    lm = self.florence.language_model
+                    if hasattr(lm, 'encoder') and hasattr(lm.encoder, 'layers'):
+                        enc_layers = list(lm.encoder.layers)
+                        for layer in enc_layers[-unfreeze_layers:]:
+                            for param in layer.parameters():
+                                param.requires_grad = True
+                        print(f"  Unfroze last {unfreeze_layers} language encoder layers ({len(enc_layers)} total)")
+                    elif hasattr(lm, 'model') and hasattr(lm.model, 'encoder'):
+                        enc_layers = list(lm.model.encoder.layers)
+                        for layer in enc_layers[-unfreeze_layers:]:
+                            for param in layer.parameters():
+                                param.requires_grad = True
+                        print(f"  Unfroze last {unfreeze_layers} model encoder layers ({len(enc_layers)} total)")
+        
+        self.feature_dim = feature_dim
+        
+        # Projection head for contrastive loss
+        self.projection = nn.Sequential(
+            nn.Linear(feature_dim, feature_dim),
+            nn.BatchNorm1d(feature_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(feature_dim, proj_dim),
+        )
+        
+        # Classification head
+        self.classifier = nn.Sequential(
+            nn.Linear(feature_dim, feature_dim // 2),
+            nn.BatchNorm1d(feature_dim // 2),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.3),
+            nn.Linear(feature_dim // 2, num_classes),
+        )
+    
+    def extract_features(self, pixel_values, input_ids):
+        """
+        Extract pooled features using the full Florence-2 forward pass.
+        
+        Florence-2 internally:
+          1. Runs DaViT vision tower on pixel_values
+          2. Projects image features into encoder space
+          3. Concatenates with text token embeddings
+          4. Runs through the encoder
+        
+        We grab the encoder's last hidden state and pool it.
+        """
+        with torch.no_grad():
+            # Use model's forward to get encoder outputs
+            # decoder_input_ids is required for seq2seq — use a dummy
+            dummy_decoder_ids = torch.zeros(
+                (pixel_values.shape[0], 1), dtype=torch.long, device=pixel_values.device
+            )
+            
+            outputs = self.florence(
+                input_ids=input_ids,
+                pixel_values=pixel_values,
+                decoder_input_ids=dummy_decoder_ids,
+                output_hidden_states=True,
+                return_dict=True,
+            )
+            
+            # Get encoder last hidden state
+            # Florence-2 outputs: encoder_last_hidden_state or encoder_hidden_states
+            if hasattr(outputs, 'encoder_last_hidden_state') and outputs.encoder_last_hidden_state is not None:
+                encoder_hidden = outputs.encoder_last_hidden_state
+            elif hasattr(outputs, 'encoder_hidden_states') and outputs.encoder_hidden_states is not None:
+                encoder_hidden = outputs.encoder_hidden_states[-1]
+            else:
+                # Fallback: use decoder hidden states from cross-attention
+                raise RuntimeError(
+                    f"Cannot find encoder hidden states. Available keys: "
+                    f"{[k for k in outputs.keys() if outputs[k] is not None]}"
+                )
+            
+            # Global average pooling over all tokens
+            features = encoder_hidden.mean(dim=1)  # (B, D)
+        
+        return features
+    
+    def forward(self, pixel_values, input_ids):
+        features = self.extract_features(pixel_values, input_ids)
+        proj = F.normalize(self.projection(features), dim=1)
+        logits = self.classifier(features)
+        return proj, logits
+
+
+# ── Supervised Contrastive Loss ────────────────────────────────────────────────
+
+class SupConLossMultiLabel(nn.Module):
+    """
+    SupCon for multi-label: positive pairs share at least one category.
+    """
+    
+    def __init__(self, temperature=0.07):
+        super().__init__()
+        self.temperature = temperature
+    
+    def forward(self, features, labels):
+        device = features.device
+        batch_size = features.shape[0]
+        
+        if batch_size <= 1:
+            return torch.tensor(0.0, device=device, requires_grad=True)
+        
+        sim_matrix = torch.matmul(features, features.T) / self.temperature
+        
+        label_sim = torch.matmul(labels, labels.T)
+        positive_mask = (label_sim > 0).float()
+        
+        identity = torch.eye(batch_size, device=device)
+        positive_mask = positive_mask - identity
+        
+        logits_max, _ = sim_matrix.max(dim=1, keepdim=True)
+        logits = sim_matrix - logits_max.detach()
+        
+        exp_logits = torch.exp(logits) * (1 - identity)
+        log_prob = logits - torch.log(exp_logits.sum(dim=1, keepdim=True) + 1e-8)
+        
+        num_positives = positive_mask.sum(dim=1)
+        valid = num_positives > 0
+        
+        if not valid.any():
+            return torch.tensor(0.0, device=device, requires_grad=True)
+        
+        mean_log_prob_pos = (positive_mask * log_prob).sum(dim=1) / (num_positives + 1e-8)
+        loss = -mean_log_prob_pos[valid].mean()
+        
+        return loss
+
+
+# ── Training ───────────────────────────────────────────────────────────────────
+
+def train_epoch(model, dataloader, optimizer, scheduler, supcon_loss_fn, 
+                device, amp_dtype, alpha=0.5, grad_accum=1):
+    model.train()
+    model.florence.eval()  # Keep Florence-2 frozen/eval always
+    
+    total_loss = 0
+    total_supcon = 0
+    total_bce = 0
+    n_batches = 0
+    
+    optimizer.zero_grad()
+    
+    for step, batch in enumerate(dataloader):
+        pv1 = batch["pixel_values_1"].to(device)
+        pv2 = batch["pixel_values_2"].to(device)
+        input_ids = batch["input_ids"].to(device)
+        labels = batch["label"].to(device)
+        
+        if amp_dtype:
+            with torch.amp.autocast("cuda", dtype=amp_dtype):
+                proj1, logits1 = model(pv1, input_ids)
+                proj2, logits2 = model(pv2, input_ids)
+                
+                projections = torch.cat([proj1, proj2], dim=0)
+                labels_dup = torch.cat([labels, labels], dim=0)
+                loss_supcon = supcon_loss_fn(projections, labels_dup)
+                
+                loss_bce = (F.binary_cross_entropy_with_logits(logits1, labels) +
+                            F.binary_cross_entropy_with_logits(logits2, labels)) / 2
+                
+                loss = alpha * loss_supcon + (1 - alpha) * loss_bce
+                loss = loss / grad_accum  # Scale for accumulation
+        else:
+            proj1, logits1 = model(pv1, input_ids)
+            proj2, logits2 = model(pv2, input_ids)
+            
+            projections = torch.cat([proj1, proj2], dim=0)
+            labels_dup = torch.cat([labels, labels], dim=0)
+            loss_supcon = supcon_loss_fn(projections, labels_dup)
+            
+            loss_bce = (F.binary_cross_entropy_with_logits(logits1, labels) +
+                        F.binary_cross_entropy_with_logits(logits2, labels)) / 2
+            
+            loss = alpha * loss_supcon + (1 - alpha) * loss_bce
+            loss = loss / grad_accum
+        
+        loss.backward()
+        
+        if (step + 1) % grad_accum == 0 or (step + 1) == len(dataloader):
+            torch.nn.utils.clip_grad_norm_(
+                [p for p in model.parameters() if p.requires_grad], max_norm=1.0
+            )
+            optimizer.step()
+            scheduler.step()
+            optimizer.zero_grad()
+        
+        total_loss += loss.item() * grad_accum  # Unscale for logging
+        total_supcon += loss_supcon.item()
+        total_bce += loss_bce.item()
+        n_batches += 1
+    
+    return {
+        "loss": total_loss / max(n_batches, 1),
+        "supcon": total_supcon / max(n_batches, 1),
+        "bce": total_bce / max(n_batches, 1),
+    }
+
+
+@torch.no_grad()
+def evaluate(model, dataloader, device, amp_dtype, threshold=0.5):
+    model.eval()
+    
+    all_preds = []
+    all_targets = []
+    
+    for batch in dataloader:
+        pv = batch["pixel_values_1"].to(device)
+        input_ids = batch["input_ids"].to(device)
+        labels = batch["label"].to(device)
+        
+        if amp_dtype:
+            with torch.amp.autocast("cuda", dtype=amp_dtype):
+                _, logits = model(pv, input_ids)
+        else:
+            _, logits = model(pv, input_ids)
+        
+        probs = torch.sigmoid(logits)
+        preds = (probs >= threshold).float()
+        
+        all_preds.append(preds.cpu())
+        all_targets.append(labels.cpu())
+    
+    all_preds = torch.cat(all_preds, dim=0)
+    all_targets = torch.cat(all_targets, dim=0)
+    
+    per_class = {}
+    micro_tp = micro_fp = micro_fn = 0
+    
+    for i, cls in enumerate(CATEGORIES):
+        tp = ((all_preds[:, i] == 1) & (all_targets[:, i] == 1)).sum().item()
+        fp = ((all_preds[:, i] == 1) & (all_targets[:, i] == 0)).sum().item()
+        fn = ((all_preds[:, i] == 0) & (all_targets[:, i] == 1)).sum().item()
+        
+        p = tp / max(tp + fp, 1)
+        r = tp / max(tp + fn, 1)
+        f1 = 2 * p * r / max(p + r, 1e-8)
+        support = int((all_targets[:, i] == 1).sum().item())
+        
+        per_class[cls] = {"precision": p, "recall": r, "f1": f1, "support": support}
+        micro_tp += tp
+        micro_fp += fp
+        micro_fn += fn
+    
+    micro_p = micro_tp / max(micro_tp + micro_fp, 1)
+    micro_r = micro_tp / max(micro_tp + micro_fn, 1)
+    micro_f1 = 2 * micro_p * micro_r / max(micro_p + micro_r, 1e-8)
+    macro_f1 = sum(m["f1"] for m in per_class.values()) / NUM_CLASSES
+    exact = (all_preds == all_targets).all(dim=1).float().mean().item()
+    
+    return {
+        "micro_p": micro_p,
+        "micro_r": micro_r,
+        "micro_f1": micro_f1,
+        "macro_f1": macro_f1,
+        "exact_match": exact,
+        "per_class": per_class,
+    }
+
+
+# ── Auto Threshold Tuning ──────────────────────────────────────────────────────
+
+@torch.no_grad()
+def find_optimal_thresholds(model, dataloader, device, amp_dtype):
+    """
+    Sweep threshold per class on validation set to maximize per-class F1.
+    Returns: dict of {class_idx: optimal_threshold}
+    """
+    model.eval()
+    
+    all_probs = []
+    all_targets = []
+    
+    for batch in dataloader:
+        pv = batch["pixel_values_1"].to(device)
+        input_ids = batch["input_ids"].to(device)
+        labels = batch["label"].to(device)
+        
+        if amp_dtype:
+            with torch.amp.autocast("cuda", dtype=amp_dtype):
+                _, logits = model(pv, input_ids)
+        else:
+            _, logits = model(pv, input_ids)
+        
+        probs = torch.sigmoid(logits)
+        all_probs.append(probs.cpu())
+        all_targets.append(labels.cpu())
+    
+    all_probs = torch.cat(all_probs, dim=0)  # (N, C)
+    all_targets = torch.cat(all_targets, dim=0)
+    
+    optimal_thresholds = {}
+    thresholds_to_try = [0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7]
+    
+    for i, cls in enumerate(CATEGORIES):
+        best_f1 = 0
+        best_t = 0.5
+        
+        for t in thresholds_to_try:
+            preds = (all_probs[:, i] >= t).float()
+            tp = ((preds == 1) & (all_targets[:, i] == 1)).sum().item()
+            fp = ((preds == 1) & (all_targets[:, i] == 0)).sum().item()
+            fn = ((preds == 0) & (all_targets[:, i] == 1)).sum().item()
+            
+            p = tp / max(tp + fp, 1)
+            r = tp / max(tp + fn, 1)
+            f1 = 2 * p * r / max(p + r, 1e-8)
+            
+            if f1 > best_f1:
+                best_f1 = f1
+                best_t = t
+        
+        optimal_thresholds[i] = best_t
+    
+    return optimal_thresholds
+
+
+@torch.no_grad()
+def evaluate_with_thresholds(model, dataloader, device, amp_dtype, thresholds):
+    """Evaluate using per-class optimal thresholds."""
+    model.eval()
+    
+    all_probs = []
+    all_targets = []
+    
+    for batch in dataloader:
+        pv = batch["pixel_values_1"].to(device)
+        input_ids = batch["input_ids"].to(device)
+        labels = batch["label"].to(device)
+        
+        if amp_dtype:
+            with torch.amp.autocast("cuda", dtype=amp_dtype):
+                _, logits = model(pv, input_ids)
+        else:
+            _, logits = model(pv, input_ids)
+        
+        probs = torch.sigmoid(logits)
+        all_probs.append(probs.cpu())
+        all_targets.append(labels.cpu())
+    
+    all_probs = torch.cat(all_probs, dim=0)
+    all_targets = torch.cat(all_targets, dim=0)
+    
+    # Apply per-class thresholds
+    all_preds = torch.zeros_like(all_probs)
+    for i in range(NUM_CLASSES):
+        t = thresholds.get(i, 0.5)
+        all_preds[:, i] = (all_probs[:, i] >= t).float()
+    
+    per_class = {}
+    micro_tp = micro_fp = micro_fn = 0
+    
+    for i, cls in enumerate(CATEGORIES):
+        tp = ((all_preds[:, i] == 1) & (all_targets[:, i] == 1)).sum().item()
+        fp = ((all_preds[:, i] == 1) & (all_targets[:, i] == 0)).sum().item()
+        fn = ((all_preds[:, i] == 0) & (all_targets[:, i] == 1)).sum().item()
+        
+        p = tp / max(tp + fp, 1)
+        r = tp / max(tp + fn, 1)
+        f1 = 2 * p * r / max(p + r, 1e-8)
+        support = int((all_targets[:, i] == 1).sum().item())
+        
+        per_class[cls] = {"precision": p, "recall": r, "f1": f1, "support": support,
+                          "threshold": thresholds.get(i, 0.5)}
+        micro_tp += tp
+        micro_fp += fp
+        micro_fn += fn
+    
+    micro_p = micro_tp / max(micro_tp + micro_fp, 1)
+    micro_r = micro_tp / max(micro_tp + micro_fn, 1)
+    micro_f1 = 2 * micro_p * micro_r / max(micro_p + micro_r, 1e-8)
+    macro_f1 = sum(m["f1"] for m in per_class.values()) / NUM_CLASSES
+    exact = (all_preds == all_targets).all(dim=1).float().mean().item()
+    
+    return {
+        "micro_p": micro_p,
+        "micro_r": micro_r,
+        "micro_f1": micro_f1,
+        "macro_f1": macro_f1,
+        "exact_match": exact,
+        "per_class": per_class,
+        "thresholds": thresholds,
+    }
+
+
+# ── Main ───────────────────────────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--base-model", type=str, default="microsoft/Florence-2-large-ft")
+    parser.add_argument("--data-dir", type=str, default=".")
+    parser.add_argument("--jsonl-dir", type=str, default="./florence2_data")
+    parser.add_argument("--output-dir", type=str, default="./checkpoints_contrastive_v2")
+    parser.add_argument("--epochs", type=int, default=30)
+    parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument("--lr", type=float, default=5e-4)
+    parser.add_argument("--alpha", type=float, default=0.3)
+    parser.add_argument("--temperature", type=float, default=0.1)
+    parser.add_argument("--proj-dim", type=int, default=128)
+    parser.add_argument("--threshold", type=float, default=0.5)
+    parser.add_argument("--auto-threshold", action="store_true",
+                        help="Auto-tune per-class thresholds on validation set")
+    parser.add_argument("--unfreeze-layers", type=int, default=0,
+                        help="Number of encoder layers to unfreeze (0 = fully frozen)")
+    parser.add_argument("--grad-accum", type=int, default=1,
+                        help="Gradient accumulation steps (effective batch = batch_size * grad_accum)")
+    parser.add_argument("--bf16", action="store_true")
+    parser.add_argument("--min-samples", type=int, default=20)
+    args = parser.parse_args()
+    
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    amp_dtype = torch.bfloat16 if args.bf16 else None
+    print(f"Device: {device}")
+    print(f"Config: epochs={args.epochs}, bs={args.batch_size}, lr={args.lr}, "
+          f"alpha={args.alpha}, temp={args.temperature}")
+    print(f"  unfreeze_layers={args.unfreeze_layers}, grad_accum={args.grad_accum}, "
+          f"auto_threshold={args.auto_threshold}")
+    
+    os.makedirs(args.output_dir, exist_ok=True)
+    
+    # ── Load Florence-2 ────────────────────────────────────────────────────
+    print(f"\nLoading Florence-2: {args.base_model}")
+    processor = AutoProcessor.from_pretrained(args.base_model, trust_remote_code=True)
+    florence = AutoModelForCausalLM.from_pretrained(
+        args.base_model, trust_remote_code=True, torch_dtype=torch.float32,
+        attn_implementation="eager",
+    )
+    
+    config = florence.config
+    feature_dim = getattr(config, 'd_model', None) or getattr(config, 'hidden_size', 1024)
+    print(f"  Feature dim: {feature_dim}")
+    
+    florence.eval()  # Keep in eval mode (frozen)
+    
+    model = ContrastiveClassifier(
+        florence_model=florence,
+        feature_dim=feature_dim,
+        proj_dim=args.proj_dim,
+        num_classes=NUM_CLASSES,
+        unfreeze_layers=args.unfreeze_layers,
+    ).to(device)
+    
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    frozen = sum(p.numel() for p in model.parameters() if not p.requires_grad)
+    print(f"  Trainable: {trainable:,} | Frozen: {frozen:,}")
+    
+    # ── Datasets ───────────────────────────────────────────────────────────
+    train_jsonl = os.path.join(args.jsonl_dir, "train_v5.jsonl")
+    valid_jsonl = os.path.join(args.jsonl_dir, "valid_v5.jsonl")
+    test_jsonl = os.path.join(args.jsonl_dir, "test_v5.jsonl")
+    
+    print(f"\nLoading datasets...")
+    train_ds = PantryContrastiveDataset(
+        train_jsonl, args.data_dir, processor,
+        augment=True, oversample=True, min_samples_per_class=args.min_samples,
+    )
+    valid_ds = PantryContrastiveDataset(
+        valid_jsonl, args.data_dir, processor,
+        augment=False, oversample=False,
+    )
+    
+    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,
+                              num_workers=2, pin_memory=True, drop_last=True)
+    valid_loader = DataLoader(valid_ds, batch_size=args.batch_size, shuffle=False,
+                              num_workers=2, pin_memory=True)
+    
+    # ── Optimizer ──────────────────────────────────────────────────────────
+    optimizer = torch.optim.AdamW(
+        [p for p in model.parameters() if p.requires_grad],
+        lr=args.lr, weight_decay=0.01,
+    )
+    
+    total_steps = len(train_loader) * args.epochs
+    warmup_steps = len(train_loader) * 2
+    scheduler = get_cosine_schedule_with_warmup(optimizer, warmup_steps, total_steps)
+    
+    supcon_loss = SupConLossMultiLabel(temperature=args.temperature)
+    
+    # ── Training ───────────────────────────────────────────────────────────
+    best_f1 = 0
+    best_epoch = 0
+    history = []
+    
+    print(f"\n{'='*70}")
+    print(f"  TRAINING START — Supervised Contrastive Learning")
+    print(f"{'='*70}")
+    
+    for epoch in range(args.epochs):
+        t0 = time.time()
+        
+        train_metrics = train_epoch(
+            model, train_loader, optimizer, scheduler, supcon_loss,
+            device, amp_dtype, alpha=args.alpha, grad_accum=args.grad_accum,
+        )
+        
+        val_metrics = evaluate(model, valid_loader, device, amp_dtype, args.threshold)
+        
+        elapsed = time.time() - t0
+        
+        print(f"\n  Epoch {epoch+1}/{args.epochs} ({elapsed:.0f}s)")
+        print(f"    Train: loss={train_metrics['loss']:.4f} "
+              f"(supcon={train_metrics['supcon']:.4f}, bce={train_metrics['bce']:.4f})")
+        print(f"    Valid: Micro F1={val_metrics['micro_f1']:.1%}, "
+              f"Macro F1={val_metrics['macro_f1']:.1%}, "
+              f"Exact={val_metrics['exact_match']:.1%}")
+        
+        history.append({
+            "epoch": epoch + 1,
+            "train": train_metrics,
+            "valid": {k: v for k, v in val_metrics.items() if k != "per_class"},
+        })
+        
+        if val_metrics["micro_f1"] > best_f1:
+            best_f1 = val_metrics["micro_f1"]
+            best_epoch = epoch + 1
+            
+            save_path = os.path.join(args.output_dir, "best_model.pt")
+            torch.save({
+                "epoch": epoch + 1,
+                "model_state_dict": {k: v for k, v in model.state_dict().items() 
+                                     if not k.startswith("florence.")},
+                "metrics": val_metrics,
+                "args": vars(args),
+                "feature_dim": feature_dim,
+            }, save_path)
+            print(f"    ★ New best! Saved to {save_path}")
+        
+        if (epoch + 1) % 10 == 0:
+            save_path = os.path.join(args.output_dir, f"epoch_{epoch+1}.pt")
+            torch.save({
+                "epoch": epoch + 1,
+                "model_state_dict": {k: v for k, v in model.state_dict().items()
+                                     if not k.startswith("florence.")},
+                "metrics": val_metrics,
+                "feature_dim": feature_dim,
+            }, save_path)
+    
+    # ── Final Report ───────────────────────────────────────────────────────
+    print(f"\n{'='*70}")
+    print(f"  TRAINING COMPLETE")
+    print(f"{'='*70}")
+    print(f"  Best epoch: {best_epoch}")
+    print(f"  Best Valid Micro F1: {best_f1:.1%}")
+    
+    # ── Test evaluation ────────────────────────────────────────────────────
+    if os.path.exists(test_jsonl):
+        print(f"\n  Loading best model for test evaluation...")
+        
+        checkpoint = torch.load(os.path.join(args.output_dir, "best_model.pt"),
+                                map_location=device, weights_only=False)
+        
+        model_eval = ContrastiveClassifier(
+            florence_model=florence,
+            feature_dim=feature_dim,
+            proj_dim=args.proj_dim,
+            num_classes=NUM_CLASSES,
+            unfreeze_layers=args.unfreeze_layers,
+        ).to(device)
+        
+        current_state = model_eval.state_dict()
+        saved_state = checkpoint["model_state_dict"]
+        current_state.update(saved_state)
+        model_eval.load_state_dict(current_state)
+        
+        test_ds = PantryContrastiveDataset(
+            test_jsonl, args.data_dir, processor,
+            augment=False, oversample=False,
+        )
+        test_loader = DataLoader(test_ds, batch_size=args.batch_size, shuffle=False,
+                                 num_workers=2, pin_memory=True)
+        
+        # Standard threshold evaluation
+        test_metrics = evaluate(model_eval, test_loader, device, amp_dtype, args.threshold)
+        
+        print(f"\n{'='*70}")
+        print(f"  TEST SET RESULTS (threshold={args.threshold})")
+        print(f"{'='*70}")
+        print(f"  Micro P:     {test_metrics['micro_p']:.1%}")
+        print(f"  Micro R:     {test_metrics['micro_r']:.1%}")
+        print(f"  Micro F1:    {test_metrics['micro_f1']:.1%}")
+        print(f"  Macro F1:    {test_metrics['macro_f1']:.1%}")
+        print(f"  Exact Match: {test_metrics['exact_match']:.1%}")
+        
+        print(f"\n  {'Class':<45} {'Prec':>6} {'Rec':>6} {'F1':>6} {'Sup':>5}")
+        print(f"  {'-'*45} {'-'*6} {'-'*6} {'-'*6} {'-'*5}")
+        for cls in sorted(test_metrics["per_class"].keys()):
+            m = test_metrics["per_class"][cls]
+            print(f"  {cls:<45} {m['precision']:>5.1%} {m['recall']:>5.1%} {m['f1']:>5.1%} {m['support']:>5}")
+        
+        # Auto threshold tuning
+        if args.auto_threshold:
+            print(f"\n{'='*70}")
+            print(f"  AUTO THRESHOLD TUNING (optimized on validation set)")
+            print(f"{'='*70}")
+            
+            optimal_thresholds = find_optimal_thresholds(
+                model_eval, valid_loader, device, amp_dtype
+            )
+            
+            print(f"  Per-class optimal thresholds:")
+            for i, cls in enumerate(CATEGORIES):
+                t = optimal_thresholds[i]
+                marker = " ←" if t != 0.5 else ""
+                print(f"    {cls:<45} {t:.2f}{marker}")
+            
+            # Evaluate test set with tuned thresholds
+            test_tuned = evaluate_with_thresholds(
+                model_eval, test_loader, device, amp_dtype, optimal_thresholds
+            )
+            
+            print(f"\n  TEST SET (auto-tuned thresholds):")
+            print(f"  Micro P:     {test_tuned['micro_p']:.1%}")
+            print(f"  Micro R:     {test_tuned['micro_r']:.1%}")
+            print(f"  Micro F1:    {test_tuned['micro_f1']:.1%}")
+            print(f"  Macro F1:    {test_tuned['macro_f1']:.1%}")
+            print(f"  Exact Match: {test_tuned['exact_match']:.1%}")
+            
+            delta = test_tuned['micro_f1'] - test_metrics['micro_f1']
+            print(f"\n  Δ Micro F1 from threshold tuning: {delta:+.1%}")
+            
+            print(f"\n  {'Class':<40} {'Fixed':>6} {'Tuned':>6} {'Δ':>6} {'Thr':>5}")
+            print(f"  {'-'*40} {'-'*6} {'-'*6} {'-'*6} {'-'*5}")
+            for cls in sorted(test_metrics["per_class"].keys()):
+                f_fixed = test_metrics["per_class"][cls]["f1"]
+                f_tuned = test_tuned["per_class"][cls]["f1"]
+                t = test_tuned["per_class"][cls]["threshold"]
+                d = f_tuned - f_fixed
+                print(f"  {cls:<40} {f_fixed:>5.1%} {f_tuned:>5.1%} {d:>+5.1%} {t:>5.2f}")
+            
+            # Use tuned metrics for saving
+            test_metrics["auto_tuned"] = test_tuned
+        
+        # Save full results
+        results = {
+            "approach": "supervised_contrastive_learning_v2",
+            "base_model": args.base_model,
+            "feature_dim": feature_dim,
+            "proj_dim": args.proj_dim,
+            "alpha": args.alpha,
+            "temperature": args.temperature,
+            "unfreeze_layers": args.unfreeze_layers,
+            "grad_accum": args.grad_accum,
+            "auto_threshold": args.auto_threshold,
+            "best_epoch": best_epoch,
+            "best_valid_f1": best_f1,
+            "test_metrics": test_metrics,
+            "training_history": history,
+        }
+        
+        results_path = os.path.join(args.output_dir, "results.json")
+        with open(results_path, "w") as f:
+            json.dump(results, f, indent=2, default=str)
+        print(f"\n  Results saved to {results_path}")
+    
+    # Save training history
+    hist_path = os.path.join(args.output_dir, "training_history.json")
+    with open(hist_path, "w") as f:
+        json.dump(history, f, indent=2)
+    print(f"  Training history saved to {hist_path}")
+
+
+if __name__ == "__main__":
+    main()
