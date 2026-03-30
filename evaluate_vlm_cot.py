@@ -311,6 +311,8 @@ def main():
         img_path = os.path.join(args.data_dir, img_rel)
         
         if not os.path.exists(img_path):
+            if i < 3:  # Print first few missing paths for debugging
+                print(f"  [WARN] Image not found: {img_path}")
             continue
         
         image = Image.open(img_path).convert("RGB")
