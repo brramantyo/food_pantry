@@ -235,20 +235,26 @@ class PantryContrastiveDataset(Dataset):
 
 class ContrastiveClassifier(nn.Module):
     """
-    Florence-2 Encoder (frozen) + Projection Head + Classification Head.
+    Florence-2 (frozen) + Projection Head + Classification Head.
     
-    Uses the full encoder (vision + text embedding) to get hidden states,
-    then pools and classifies.
+    Florence-2 architecture:
+      - Vision Tower (DaViT) processes pixel_values → image features
+      - Image projection maps vision features → encoder embedding space
+      - Text encoder processes input_ids + projected image features
+    
+    We use the FULL model to get encoder outputs (which include vision info),
+    then pool and classify. The entire Florence-2 model is frozen.
     """
     
     def __init__(self, florence_model, feature_dim, proj_dim=128, num_classes=21):
         super().__init__()
         
-        # Keep full encoder for feature extraction
-        self.encoder = florence_model.get_encoder()
+        # Keep the FULL Florence-2 model for feature extraction
+        # (need vision tower + projection + encoder together)
+        self.florence = florence_model
         
-        # Freeze entire encoder
-        for param in self.encoder.parameters():
+        # Freeze EVERYTHING in Florence-2
+        for param in self.florence.parameters():
             param.requires_grad = False
         
         self.feature_dim = feature_dim
@@ -271,14 +277,48 @@ class ContrastiveClassifier(nn.Module):
         )
     
     def extract_features(self, pixel_values, input_ids):
-        """Extract pooled features from encoder."""
+        """
+        Extract pooled features using the full Florence-2 forward pass.
+        
+        Florence-2 internally:
+          1. Runs DaViT vision tower on pixel_values
+          2. Projects image features into encoder space
+          3. Concatenates with text token embeddings
+          4. Runs through the encoder
+        
+        We grab the encoder's last hidden state and pool it.
+        """
         with torch.no_grad():
-            encoder_outputs = self.encoder(
+            # Use model's forward to get encoder outputs
+            # decoder_input_ids is required for seq2seq — use a dummy
+            dummy_decoder_ids = torch.zeros(
+                (pixel_values.shape[0], 1), dtype=torch.long, device=pixel_values.device
+            )
+            
+            outputs = self.florence(
                 input_ids=input_ids,
                 pixel_values=pixel_values,
+                decoder_input_ids=dummy_decoder_ids,
+                output_hidden_states=True,
+                return_dict=True,
             )
-            hidden = encoder_outputs.last_hidden_state  # (B, seq_len, D)
-            features = hidden.mean(dim=1)  # Global average pool → (B, D)
+            
+            # Get encoder last hidden state
+            # Florence-2 outputs: encoder_last_hidden_state or encoder_hidden_states
+            if hasattr(outputs, 'encoder_last_hidden_state') and outputs.encoder_last_hidden_state is not None:
+                encoder_hidden = outputs.encoder_last_hidden_state
+            elif hasattr(outputs, 'encoder_hidden_states') and outputs.encoder_hidden_states is not None:
+                encoder_hidden = outputs.encoder_hidden_states[-1]
+            else:
+                # Fallback: use decoder hidden states from cross-attention
+                raise RuntimeError(
+                    f"Cannot find encoder hidden states. Available keys: "
+                    f"{[k for k in outputs.keys() if outputs[k] is not None]}"
+                )
+            
+            # Global average pooling over all tokens
+            features = encoder_hidden.mean(dim=1)  # (B, D)
+        
         return features
     
     def forward(self, pixel_values, input_ids):
@@ -337,7 +377,7 @@ class SupConLossMultiLabel(nn.Module):
 def train_epoch(model, dataloader, optimizer, scheduler, supcon_loss_fn, 
                 device, amp_dtype, alpha=0.5):
     model.train()
-    model.encoder.eval()  # Keep encoder frozen/eval
+    model.florence.eval()  # Keep Florence-2 frozen/eval always
     
     total_loss = 0
     total_supcon = 0
@@ -496,6 +536,8 @@ def main():
     feature_dim = getattr(config, 'd_model', None) or getattr(config, 'hidden_size', 1024)
     print(f"  Feature dim: {feature_dim}")
     
+    florence.eval()  # Keep in eval mode (frozen)
+    
     model = ContrastiveClassifier(
         florence_model=florence,
         feature_dim=feature_dim,
@@ -581,7 +623,7 @@ def main():
             torch.save({
                 "epoch": epoch + 1,
                 "model_state_dict": {k: v for k, v in model.state_dict().items() 
-                                     if "encoder" not in k},
+                                     if not k.startswith("florence.")},
                 "metrics": val_metrics,
                 "args": vars(args),
                 "feature_dim": feature_dim,
@@ -593,7 +635,7 @@ def main():
             torch.save({
                 "epoch": epoch + 1,
                 "model_state_dict": {k: v for k, v in model.state_dict().items()
-                                     if "encoder" not in k},
+                                     if not k.startswith("florence.")},
                 "metrics": val_metrics,
                 "feature_dim": feature_dim,
             }, save_path)
