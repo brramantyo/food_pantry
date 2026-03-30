@@ -277,9 +277,9 @@ def main():
     # ── Load Model ─────────────────────────────────────────────────────
     print(f"\nLoading {args.model}...")
     
-    from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
+    from transformers import AutoModelForImageTextToText, AutoProcessor
     
-    model = Qwen2VLForConditionalGeneration.from_pretrained(
+    model = AutoModelForImageTextToText.from_pretrained(
         args.model,
         torch_dtype=torch.bfloat16 if args.bf16 else torch.float32,
         device_map="auto",
