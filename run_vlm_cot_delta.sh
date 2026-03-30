@@ -12,10 +12,16 @@
 cd ~/food_pantry
 source ~/usd_env/bin/activate
 
+# Install flash-attn if not present (saves massive VRAM)
+pip install flash-attn --no-build-isolation 2>/dev/null || echo "flash-attn not installed, will use sdpa"
+
 echo "=== VLM Chain-of-Thought: Qwen2.5-VL-7B-Instruct ==="
 echo "=== Zero-shot classification with step-by-step reasoning ==="
 echo "=== Running on Delta (A100 GPU) ==="
 echo ""
+
+# Set memory management to avoid fragmentation
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 python evaluate_vlm_cot.py \
   --model Qwen/Qwen2.5-VL-7B-Instruct \
