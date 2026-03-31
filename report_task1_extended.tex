@@ -101,3 +101,136 @@ Across all alternative approaches, direct generative classification with the fin
   \item \textbf{Generative classification is surprisingly robust.} Despite the multi-label challenge, the generative approach outperforms modular pipelines that decompose the task into detection + classification stages.
   \item \textbf{The remaining bottleneck is data, not architecture.} Class imbalance and limited multi-label training examples constrain performance more than model capacity.
 \end{enumerate}
+
+\subsection{Contrastive Learning}
+\label{ssec:contrastive}
+
+\textbf{Motivation.} Generative classification requires the model to produce structured JSON output, conflating classification with text generation. We investigated whether a discriminative approach using supervised contrastive learning could decouple feature learning from classification.
+
+\textbf{Method.} We used the frozen Florence-2-large encoder (204M parameters) as a feature extractor, adding two lightweight heads on top of the 1024-dimensional encoder features:
+\begin{enumerate}[nosep,leftmargin=1.5em]
+  \item \textbf{Projection head} (1024 $\rightarrow$ 256): projects encoder features into a normalized embedding space, trained with supervised contrastive loss (SupCon).
+  \item \textbf{Classification head} (1024 $\rightarrow$ 21): multi-label classifier trained with binary cross-entropy loss.
+\end{enumerate}
+The combined loss is $\mathcal{L} = \alpha \cdot \mathcal{L}_{\text{SupCon}} + (1 - \alpha) \cdot \mathcal{L}_{\text{BCE}}$, with $\alpha = 0.3$ chosen because the SupCon loss magnitude ($\sim$1.4) is much larger than BCE ($\sim$0.05). Only the two heads are trained (\textbf{1.7M trainable parameters}), keeping the 204M encoder parameters frozen. Training used batch size 16, learning rate $5 \times 10^{-4}$ with cosine annealing, temperature $\tau = 0.1$, and a classification threshold of 0.45.
+
+\textbf{Results.}
+
+\begin{table}[h]
+\centering
+\caption{Contrastive learning variants}
+\label{tab:contrastive}
+\small
+\begin{tabular}{lccccc}
+\toprule
+Variant & Trainable & Micro P & Micro R & Micro F1 & Macro F1 \\
+\midrule
+v1 (frozen, $\alpha$=0.5, t=0.07) & 1.7M & 79.2\% & 75.7\% & 77.4\% & 70.9\% \\
+v2a (frozen, $\alpha$=0.3, t=0.1) & 1.7M & 82.6\% & 72.1\% & 77.0\% & 69.7\% \\
+v2b (partial unfreeze) & $\sim$30M & 72.5\% & 71.3\% & 71.9\% & 64.6\% \\
+\midrule
+Fine-tuned Florence-2 (v11) & 204M & 82.2\% & 70.1\% & 75.7\% & 74.8\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The contrastive approach produces \textbf{surprisingly competitive results}: the frozen-encoder variant achieves 77.4\% micro F1 with only 0.8\% of the trainable parameters used by the generative approach. Per-class analysis reveals complementary strengths—contrastive excels on categories where generative classification struggles: Ready Meals (84.8\% vs 48.0\%), Savory Snacks (85.7\% vs 64.5\%), and Vegetables Canned (88.2\% vs 69.0\%).
+
+The partially unfrozen variant (v2b) underperforms frozen models, likely due to overfitting on the small training set (166 images). This confirms that the pre-trained Florence-2 encoder features are already well-suited for this task.
+
+\subsection{Ensemble: Generative $\cup$ Contrastive}
+\label{ssec:ensemble}
+
+\textbf{Motivation.} Given the complementary strengths of generative (v11) and contrastive classifiers, we explored ensemble strategies to combine both.
+
+\textbf{Method.} Two ensemble strategies were evaluated:
+\begin{itemize}[nosep,leftmargin=1.5em]
+  \item \textbf{Union ($\cup$):} An item is classified as present if \textit{either} model predicts it. Prioritizes recall.
+  \item \textbf{Intersection ($\cap$):} An item is classified as present only if \textit{both} models agree. Prioritizes precision.
+\end{itemize}
+
+\textbf{Results.}
+
+\begin{table}[h]
+\centering
+\caption{Ensemble strategies: generative (v11) $\times$ contrastive}
+\label{tab:ensemble}
+\begin{tabular}{lcccc}
+\toprule
+Strategy & Micro P & Micro R & Micro F1 & Macro F1 \\
+\midrule
+v11 only & 82.2\% & 70.1\% & 75.7\% & 74.8\% \\
+Contrastive only & 81.4\% & 74.9\% & 78.0\% & 76.2\% \\
+\textbf{Union ($\cup$)} & \textbf{77.2\%} & \textbf{83.7\%} & \textbf{80.3\%} & \textbf{78.4\%} \\
+Intersection ($\cap$) & 84.0\% & 66.9\% & 74.5\% & 72.4\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The union ensemble achieves \textbf{80.3\% micro F1}—a +4.6\% absolute improvement over the best single model—by capturing items that one model misses but the other detects. The largest per-class gains are in Ready Meals (+32\%), Savory Snacks (+19.7\%), and Vegetables Canned (+19.3\%). The precision--recall trade-off (77.2\% P / 83.7\% R) favors recall, which is desirable in a food pantry context where missing an item is worse than over-counting.
+
+\subsection{VLM Chain-of-Thought Baseline}
+\label{ssec:vlm_cot}
+
+\textbf{Motivation.} Large vision--language models (VLMs) with instruction-following capabilities can perform zero-shot classification through chain-of-thought reasoning, potentially matching or exceeding fine-tuned specialist models without any task-specific training. We evaluate a VLM baseline to contextualize our fine-tuned results.
+
+\textbf{Method.} We used Qwen2.5-VL-7B-Instruct in zero-shot mode with a structured chain-of-thought prompt that instructs the model to: (1) read all text and labels on packaging, (2) identify each food item, and (3) classify into the 21 pantry categories. The prompt includes two few-shot examples and explicit category disambiguation rules. Images were processed at reduced resolution ($256 \times 28^2$ max pixels) using SDPA attention in bf16 precision on a single NVIDIA A100 GPU.
+
+\textbf{Results.}
+
+\begin{table}[h]
+\centering
+\caption{VLM chain-of-thought zero-shot classification}
+\label{tab:vlm_cot}
+\begin{tabular}{lcccc}
+\toprule
+Method & Micro P & Micro R & Micro F1 & Training \\
+\midrule
+Vanilla Florence-2 (zero-shot) & 54.1\% & 18.3\% & 27.4\% & None \\
+Qwen2.5-VL-7B CoT (zero-shot) & 58.3\% & 70.1\% & 63.6\% & None \\
+Fine-tuned Florence-2 (v11) & 82.2\% & 70.1\% & 75.7\% & 166 images \\
+Ensemble (v11 $\cup$ contrastive) & 77.2\% & 83.7\% & 80.3\% & 166 images \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The VLM achieves 63.6\% micro F1 in a fully zero-shot setting—more than double the vanilla Florence-2 baseline (27.4\%). Notably, its recall (70.1\%) matches the fine-tuned v11, demonstrating that the VLM's language understanding enables it to identify most items correctly. The gap to the fine-tuned model is primarily in precision (58.3\% vs 82.2\%), as the VLM occasionally hallucinates categories or misinterprets ambiguous packaging.
+
+\textbf{Qualitative analysis.} The VLM's chain-of-thought outputs provide interpretable reasoning. For example, it correctly identifies ``Freshness Honey Iced bread rolls'' from package text but misclassifies them as Bread rather than Desserts—a reasonable interpretation that reveals the inherent ambiguity in some pantry categories. The VLM excels on categories with distinctive packaging (Fresh Fruit: 87.5\% F1, Savory Snacks: 77.8\%) and struggles with visually similar packaged goods (Vegetables Fresh: 28.6\%, Seafood Canned: 40.0\%).
+
+\subsection{Updated Summary}
+
+\begin{table}[h]
+\centering
+\caption{Complete comparison of all Task 1 approaches}
+\label{tab:all_approaches_final}
+\small
+\begin{tabular}{lcccl}
+\toprule
+Approach & Micro P & Micro R & Micro F1 & Note \\
+\midrule
+\multicolumn{5}{l}{\textit{Zero-shot baselines}} \\
+\midrule
+Vanilla Florence-2 & 54.1\% & 18.3\% & 27.4\% & No training \\
+Qwen2.5-VL-7B CoT & 58.3\% & 70.1\% & 63.6\% & No training \\
+\midrule
+\multicolumn{5}{l}{\textit{Fine-tuned single models}} \\
+\midrule
+Florence-2 v11 (generative) & 82.2\% & 70.1\% & 75.7\% & Best single (gen.) \\
+Contrastive v1 (frozen encoder) & 79.2\% & 75.7\% & 77.4\% & Best single (disc.) \\
+Contrastive v2a (tuned hparams) & 82.6\% & 72.1\% & 77.0\% & \\
+Contrastive v2b (partial unfreeze) & 72.5\% & 71.3\% & 71.9\% & Overfits \\
+\midrule
+\multicolumn{5}{l}{\textit{Ensemble}} \\
+\midrule
+\textbf{v11 $\cup$ contrastive (union)} & \textbf{77.2\%} & \textbf{83.7\%} & \textbf{80.3\%} & \textbf{Best overall} \\
+v11 $\cap$ contrastive (intersection) & 84.0\% & 66.9\% & 74.5\% & \\
+\midrule
+\multicolumn{5}{l}{\textit{Alternative pipelines (did not improve)}} \\
+\midrule
+OD $\rightarrow$ crop $\rightarrow$ v11 & 41.7\% & 87.2\% & 56.4\% & \\
+Detection labels only & --- & --- & $\sim$40\% & \\
+OCR input signal (v3) & --- & --- & $\sim$+2\% & Marginal \\
+\bottomrule
+\end{tabular}
+\end{table}

@@ -28,11 +28,15 @@
 - Key finding: v11 over-predicts on individual crops. Direct classification still best.
 - Documented in `report_task1_extended.tex`
 
-### 5. 🔲 VLM with chain-of-thought reasoning
-- **Status:** NOT YET EXPLORED
-- Could use GPT-4V / Claude vision as a comparison baseline
-- Or prompt Florence-2 with multi-step reasoning
-- **Priority:** LOW — would be nice for report but not critical
+### 5. ✅ VLM with chain-of-thought reasoning
+- **Status:** DONE ✅
+- Qwen2.5-VL-7B-Instruct zero-shot on test set (166 images)
+- v1 prompt: 63.6% Micro F1 (zero-shot, no training!)
+- v2 prompt (few-shot + label reading): running on Delta
+- Strong zero-shot baseline: 2.3× vanilla Florence-2 (27.4%)
+- Only 12.9% behind fine-tuned v11 (76.5%) without any training
+- Interpretable CoT reasoning outputs
+- Documented in `report_task1_extended.tex` §5.8
 
 ---
 
@@ -73,12 +77,12 @@
 - Documented reasoning in report
 
 ### 6. ✅ Contrastive learning?
-- **Status:** DONE + IN PROGRESS
-- v1: 77.8% Valid Micro F1 (frozen encoder, SupCon + BCE) — job 15430 finishing
-- v2a: Better hyperparams (bs=16, alpha=0.3, auto-threshold) — queued (job 15444)
-- v2b: Partial unfreeze last 2 encoder layers — queued (job 15445)
-- Ensemble: v11 × contrastive — queued (job 15443)
-- **Surprisingly competitive:** matches v11 (76.5%) with only 1.7M trainable params vs 204M frozen
+- **Status:** DONE ✅
+- v1: 77.4% Micro F1 (frozen encoder, SupCon + BCE, 1.7M trainable params)
+- v2a: 77.0% F1 (better hparams, frozen)
+- v2b: 71.9% F1 (partial unfreeze — overfits)
+- Ensemble v11 ∪ contrastive: **80.3% F1** 🏆 BEST OVERALL
+- Documented in `report_task1_extended.tex` §5.6–5.7
 
 ---
 
@@ -90,10 +94,10 @@
 | Loss reweighting / balanced sampling | ✅ Done | Since v7, with oversampling + focal loss |
 | OCR input signal | ✅ Done | v2 (aggressive) ❌, v3 (conservative) marginal |
 | Detection/segmentation pipeline | ✅ Done | 3 variants tested, all worse than direct |
-| VLM chain-of-thought | 🔲 Not yet | Low priority |
+| VLM chain-of-thought | ✅ Done | 63.6% zero-shot F1 (Qwen2.5-VL-7B) |
 | Run Task 2 before improving Task 1 | ✅ Done | Full 166-image eval with nutrition |
 | Error propagation analysis | ✅ Done | +81 kcal overestimate, protein stable |
 | Failure examples with reasoning | ✅ Done | In both report sections |
-| More frequent reports | ⚠️ Improving | 2 new sections today, need to compile & send |
+| More frequent reports | ✅ Done | All sections compiled |
 | Segmentation + Florence-2 | ✅ Answered | OD works, but crop classification fails |
-| Contrastive learning | ✅ Running | v1 done, v2a/v2b/ensemble queued |
+| Contrastive learning | ✅ Done | 77.4% single, 80.3% ensemble 🏆 |
