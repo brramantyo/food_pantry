@@ -318,6 +318,8 @@ def main():
     exact_match = 0
     baseline_scores, cot_scores = [], []
     rerank_improvements, total_reranks = 0, 0
+    vlm_parse_failures = 0
+    vlm_raw_texts = []  # save raw VLM outputs for debugging
     t0_all = time.time()
 
     for i, sample in enumerate(samples):
@@ -422,14 +424,76 @@ def main():
 
             generated_ids = vlm_ids[:, vlm_inputs.input_ids.shape[1]:]
             vlm_text = vlm_processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+
+            # Try multiple parsing strategies
+            vlm_parsed = None
+            parse_method = "none"
+
+            # Strategy 1: parse_json_from_text (looks for top-level JSON with "products")
             vlm_parsed = parse_json_from_text(vlm_text)
+            if vlm_parsed and "products" in vlm_parsed:
+                parse_method = "direct"
+            else:
+                # Strategy 2: VLM may output a JSON array instead of {"products": [...]}
+                vlm_parsed = None
+                try:
+                    stripped = re.sub(r'```json\s*', '', vlm_text.strip())
+                    stripped = re.sub(r'```\s*', '', stripped)
+                    arr_start = stripped.find("[")
+                    arr_end = stripped.rfind("]") + 1
+                    if arr_start >= 0 and arr_end > arr_start:
+                        arr = json.loads(stripped[arr_start:arr_end])
+                        if isinstance(arr, list) and len(arr) > 0 and isinstance(arr[0], dict):
+                            vlm_parsed = {"products": arr}
+                            parse_method = "array"
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+                # Strategy 3: Multiple JSON objects (one per product)
+                if not vlm_parsed:
+                    products = []
+                    for m in re.finditer(r'\{[^{}]+\}', vlm_text):
+                        try:
+                            obj = json.loads(m.group())
+                            if "category" in obj or "product_name" in obj or "brand" in obj:
+                                products.append(obj)
+                        except json.JSONDecodeError:
+                            pass
+                    if products:
+                        vlm_parsed = {"products": products}
+                        parse_method = "multi_obj"
+
+            vlm_raw_texts.append(vlm_text[:500])  # save for debugging
 
             if vlm_parsed and "products" in vlm_parsed:
                 for prod in vlm_parsed["products"]:
                     cat = normalize_category(prod.get("category", ""))
                     if cat not in VALID_CATEGORIES:
+                        # Try matching by checking all predicted cats
+                        for pc in pred_cats:
+                            if pc.lower() in str(prod).lower():
+                                cat = pc
+                                break
+                    if cat not in VALID_CATEGORIES:
                         continue
-                    usda_query = prod.get("usda_query", cat)
+
+                    # Accept multiple key names for USDA query
+                    usda_query = (prod.get("usda_query")
+                                  or prod.get("us_query")
+                                  or prod.get("query")
+                                  or prod.get("search_query")
+                                  or "")
+                    # If no query key found, build from product info
+                    if not usda_query or usda_query == "?" or len(usda_query) < 3:
+                        parts = []
+                        if prod.get("brand") and prod["brand"] != "unknown":
+                            parts.append(prod["brand"])
+                        if prod.get("product_name") and prod["product_name"] != "unknown":
+                            parts.append(prod["product_name"])
+                        if prod.get("details") and prod["details"] not in ("unknown", "unspecified"):
+                            parts.append(prod["details"])
+                        usda_query = " ".join(parts) if parts else cat
+
                     vlm_products[cat] = prod
                     cot_matches = matcher.search_hybrid(
                         usda_query, pantry_category=cat, top_k=args.top_k
@@ -437,6 +501,8 @@ def main():
                     cot_usda[cat] = cot_matches
                     if cot_matches:
                         cot_scores.append(cot_matches[0].get("score", 0))
+            else:
+                vlm_parse_failures += 1
 
             for cat in pred_cats:
                 if cat not in cot_usda:
@@ -496,6 +562,7 @@ def main():
                         rerank_improvements += 1
 
         # ── Store result ──────────────────────────────────────────────
+        vlm_raw = vlm_raw_texts[-1] if vlm_raw_texts and len(vlm_raw_texts) > len(results) else ""
         results.append({
             "image": img_rel,
             "target_categories": sorted(target_cats),
@@ -504,6 +571,7 @@ def main():
             "ensemble_predictions": sorted(pred_cats),
             "classification_correct": target_cats == pred_cats,
             "vlm_products": vlm_products,
+            "vlm_raw": vlm_raw,
             "baseline_top_match": {
                 cat: {"description": ms[0]["description"], "score": round(ms[0].get("score", 0), 4)}
                 for cat, ms in baseline_usda.items() if ms
@@ -545,6 +613,8 @@ def main():
     print(f"    Exact Match: {exact_match/max(n,1):.1%}")
 
     print(f"\n  TASK 2 (USDA Matching):")
+    vlm_success = sum(1 for r in results if r.get("vlm_products"))
+    print(f"    VLM product ID: {vlm_success}/{n} parsed ({100*vlm_success/max(n,1):.0f}%), {vlm_parse_failures} parse failures")
     if baseline_scores:
         print(f"    Baseline (category-only):  mean={np.mean(baseline_scores):.4f}")
     if cot_scores:
@@ -587,6 +657,8 @@ def main():
             "baseline_mean_score": round(float(np.mean(baseline_scores)), 4) if baseline_scores else 0,
             "cot_mean_score": round(float(np.mean(cot_scores)), 4) if cot_scores else 0,
             "improvement": round(float(np.mean(cot_scores) - np.mean(baseline_scores)), 4) if cot_scores and baseline_scores else 0,
+            "vlm_parsed_success": vlm_success,
+            "vlm_parse_failures": vlm_parse_failures,
             "rerank_attempts": total_reranks,
             "rerank_changes": rerank_improvements,
         },
