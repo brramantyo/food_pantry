@@ -40,6 +40,20 @@ The dataset is imbalanced: the largest class has 189 images while Baby Food has 
 
 \textbf{External data:} We mapped part of the Grocery Store Dataset \cite{klasson2019grocery} into the pantry taxonomy and used matched classes as additional training data.
 
+\subsection{Training Version History}
+
+Each training version represents a specific configuration change. Understanding this progression is important for interpreting the results:
+
+\begin{itemize}[leftmargin=1.5em]
+  \item \textbf{Vanilla (zero-shot):} Florence-2 used out-of-the-box with its \texttt{<OD>} (object detection) task. No fine-tuning. The model detects generic objects but has no knowledge of pantry categories. This serves as the lower-bound baseline.
+  
+  \item \textbf{v6 (vision+decoder LoRA):} First successful fine-tuning. We applied Low-Rank Adaptation (LoRA) to \textit{both} the vision encoder and language decoder of Florence-2. Previous versions (v1--v5) only adapted the language decoder, which was insufficient. The key insight was that the vision encoder also needs adaptation to learn pantry-specific visual features. Training used the pantry training set only.
+  
+  \item \textbf{v9 (mixed-data fine-tuning):} Added external training data from the Grocery Store Dataset. We mapped grocery categories to our 21 pantry categories (e.g., grocery ``Pasta'' $\rightarrow$ pantry ``Carbohydrate Meal'') and trained on the combined dataset. Also introduced focal loss (gamma=1.0) with label smoothing (0.1) to handle class imbalance, and confusion-pair boosting: images from frequently confused class pairs (e.g., Ready Meals vs.\ Carbohydrate Meal) were oversampled during training.
+  
+  \item \textbf{v11 (continued fine-tuning):} Instead of training from scratch, we loaded the best v9 checkpoint and continued training with a lower learning rate ($1 \times 10^{-5}$ vs.\ $5 \times 10^{-5}$). This ``warm restart'' approach preserves learned features while refining decision boundaries. We also increased \texttt{min\_samples\_per\_class} to ensure every category appears at least 15 times per epoch, and added targeted boosting for the 5 weakest classes (Dairy, Vegetables Fresh, Nut Butters, Granola, Ready Meals). \textbf{This became the best single generative model at 76.5\% micro F1.}
+\end{itemize}
+
 \subsection{Classification Results Progression}
 
 \begin{table}[h]
@@ -93,9 +107,16 @@ Following the initial fine-tuning results, we conducted several additional exper
 
 \subsection{Detection-First Pipeline}
 
-\textbf{Motivation.} Since under-detection in multi-label images is the main bottleneck, we hypothesized that first detecting individual objects and then classifying each crop might improve recall.
+\textbf{Motivation.} Since under-detection in multi-label images is the main bottleneck, we hypothesized that first detecting individual objects (bounding boxes) and then classifying each cropped object might improve recall. This decomposes the multi-label problem into multiple single-label problems.
 
-\textbf{Results.} Three variants were tested:
+\textbf{Method.} We tested three variants:
+\begin{enumerate}[nosep,leftmargin=1.5em]
+  \item \textbf{Vanilla OD $\rightarrow$ v11:} Use Florence-2's built-in object detection (\texttt{<OD>} task) to find bounding boxes, crop each detection with 15\% padding, then classify each crop with v11.
+  \item \textbf{Fine-tuned OD (labels only):} Fine-tune Florence-2 on the \texttt{<OD>} task using COCO-format bounding box annotations from the training set (10,004 annotations, 15 epochs). Use the OD model's predicted labels directly as classification output.
+  \item \textbf{Fine-tuned OD $\rightarrow$ crop $\rightarrow$ v11:} Use the fine-tuned OD model for localization only (ignoring its unreliable labels), crop each detection, classify with v11, and merge with full-image classification as fallback.
+\end{enumerate}
+
+\textbf{Results.}
 
 \begin{table}[h]
 \centering
@@ -119,21 +140,41 @@ The detection stage dramatically improves recall (70.5\% $\rightarrow$ 87.2\%), 
 
 \subsection{OCR-Based Input Signal}
 
-\textbf{Motivation.} Package text (brand names, product descriptions) contains discriminative information. We explored using Florence-2's \texttt{<REGION\_TO\_OCR>} capability.
+\textbf{Motivation.} Food packaging contains highly discriminative text (brand names, product descriptions, ingredients) that image-only classification may miss. For example, a can of ``Campbell's Chicken Noodle Soup'' is much easier to classify from its label text than from its visual appearance (a generic cylindrical can).
 
-\textbf{Results.} Two variants: (1) aggressive OCR matching decreased F1 from 57.6\% to 48.4\% (too noisy); (2) conservative OCR improved 3 categories (Granola +50\% F1, Savory Snacks +9.4\%, Soup +6.8\%) while minimally impacting others. Overall, OCR is not a reliable general strategy due to noise from nutrition labels, legal text, and barcodes.
+\textbf{Method.} We used Florence-2's \texttt{<REGION\_TO\_OCR>} capability to extract text from detected regions, then matched extracted text against a keyword dictionary mapping common food terms to categories. Two variants:
+\begin{itemize}[nosep,leftmargin=1.5em]
+  \item \textbf{v2 (aggressive):} Broad keyword matching. Any single keyword match boosts the corresponding category. Result: \textit{decreased} F1 from 57.6\% to 48.4\% because nutrition label text (``Calories'', ``Protein''), legal text, and barcodes triggered false matches.
+  \item \textbf{v3 (conservative):} Added a blacklist for nutrition/legal text, required multi-word keywords, and required $\geq$2 keyword matches per category. Improved 3 categories (Granola +50\% F1, Savory Snacks +9.4\%, Soup +6.8\%) with minimal impact on others. Overall gain: $\sim$+2\% micro F1.
+\end{itemize}
+
+\textbf{Conclusion.} OCR provides modest gains for select categories but is not a reliable general strategy. The difficulty lies in distinguishing informative package text from noise.
 
 \subsection{Supervised Contrastive Learning}
 \label{sec:contrastive}
 
-\textbf{Motivation.} Generative classification conflates classification with text generation. We investigated whether a discriminative approach could decouple feature learning from classification.
+\textbf{Motivation.} The generative approach (v11) produces structured JSON text as output, which means the model must simultaneously understand the image \textit{and} generate valid text. This conflation of classification with text generation may limit accuracy. We investigated a purely discriminative approach that separates feature learning from classification.
 
-\textbf{Method.} We used the frozen Florence-2-large encoder (204M parameters) as a feature extractor, adding two lightweight heads on top:
+\textbf{Architecture.} We keep the entire Florence-2-large encoder (204M parameters) \textbf{frozen} as a fixed feature extractor. On top of the 1024-dimensional encoder output, we add two small trainable heads:
 \begin{enumerate}[nosep,leftmargin=1.5em]
-  \item \textbf{Projection head} (1024 $\rightarrow$ 256): trained with supervised contrastive loss (SupCon).
-  \item \textbf{Classification head} (1024 $\rightarrow$ 21): trained with binary cross-entropy.
+  \item \textbf{Projection head} (2 layers: 1024 $\rightarrow$ 512 $\rightarrow$ 256 with ReLU + BatchNorm): maps encoder features into a normalized embedding space. Trained with Supervised Contrastive Loss (SupCon) \cite{khosla2020supcon}, which pulls images of the same category closer together in embedding space while pushing different categories apart.
+  \item \textbf{Classification head} (2 layers: 1024 $\rightarrow$ 512 $\rightarrow$ 21 with ReLU + Dropout): a standard multi-label classifier trained with binary cross-entropy (BCE) loss.
 \end{enumerate}
-Combined loss: $\mathcal{L} = \alpha \cdot \mathcal{L}_{\text{SupCon}} + (1 - \alpha) \cdot \mathcal{L}_{\text{BCE}}$. Only the two heads are trained (\textbf{1.7M trainable parameters}), keeping 204M encoder parameters frozen.
+
+\textbf{Loss function.} The combined loss is:
+\[
+\mathcal{L} = \alpha \cdot \mathcal{L}_{\text{SupCon}} + (1 - \alpha) \cdot \mathcal{L}_{\text{BCE}}
+\]
+We set $\alpha = 0.3$ (not 0.5) because the SupCon loss magnitude ($\sim$1.4) is much larger than BCE ($\sim$0.05); $\alpha = 0.3$ ensures both losses contribute proportionally.
+
+\textbf{Why this works.} The key insight is that the pre-trained Florence-2 encoder already produces excellent visual features from ImageNet-scale pre-training. Rather than fine-tuning the entire 204M-parameter model (risking overfitting on 166 images), we train only 1.7M parameters in the two heads. The contrastive loss further structures the feature space by category similarity, while the BCE head performs the actual classification.
+
+\textbf{Variants tested:}
+\begin{itemize}[nosep,leftmargin=1.5em]
+  \item \textbf{v1} ($\alpha$=0.5, temperature $\tau$=0.07, lr=$1 \times 10^{-3}$): initial attempt with equal loss weighting.
+  \item \textbf{v2a} ($\alpha$=0.3, $\tau$=0.1, lr=$5 \times 10^{-4}$): better-calibrated loss balance, lower learning rate. Slightly higher precision but lower recall.
+  \item \textbf{v2b} (same as v2a but \textbf{unfreezing the last 2 encoder layers}): allows the encoder to adapt. \textit{Result:} worse performance (71.9\% vs 77.4\%), confirming that unfreezing causes overfitting on the small dataset.
+\end{itemize}
 
 \begin{table}[h]
 \centering
@@ -157,7 +198,15 @@ Fine-tuned Florence-2 (v11) & 204M & 82.2\% & 70.1\% & 75.7\% & 74.8\% \\
 
 \subsection{Ensemble: Generative $\cup$ Contrastive}
 
-Given the complementary strengths, we combined both classifiers:
+\textbf{Motivation.} The generative (v11) and contrastive classifiers make \textit{different types of errors}. v11 is strong on categories with distinctive text descriptions (e.g., Soup, Condiments) but weak on Ready Meals and Savory Snacks. The contrastive classifier excels on visually distinctive categories (Ready Meals: 84.8\% vs v11's 48.0\%) but is weaker on text-dependent ones. This complementarity suggests that combining both could capture items that either model alone misses.
+
+\textbf{Method.} For each test image, we run both models independently and combine their predictions:
+\begin{itemize}[nosep,leftmargin=1.5em]
+  \item \textbf{Union ($\cup$):} A category is predicted if \textit{either} model predicts it. This maximizes recall --- if either model detects an item, it is included. The cost is lower precision (false positives from either model accumulate).
+  \item \textbf{Intersection ($\cap$):} A category is predicted only if \textit{both} models agree. This maximizes precision but reduces recall, since both models must independently detect each item.
+\end{itemize}
+
+\textbf{Why union works best.} The main bottleneck in Task 1 is \textit{under-detection} (missing items), not false positives. Union directly addresses this by letting each model cover the other's blind spots. The precision cost (77.2\% vs 82.2\%) is acceptable because the recall gain (83.7\% vs 70.1\%) is much larger.
 
 \begin{table}[h]
 \centering
@@ -179,9 +228,20 @@ The union ensemble achieves \textbf{80.3\% micro F1} (+4.6\% over best single mo
 
 \subsection{VLM Chain-of-Thought Baseline}
 
-\textbf{Motivation.} We evaluate whether a large vision--language model can perform zero-shot classification through chain-of-thought reasoning, providing context for the value of task-specific fine-tuning.
+\textbf{Motivation.} Recent large vision--language models (VLMs) like GPT-4V and Qwen2.5-VL can perform complex visual reasoning without any task-specific training. We evaluate whether such a model can classify pantry items zero-shot, providing context for the value of our fine-tuning approach.
 
-\textbf{Method.} Qwen2.5-VL-7B-Instruct \cite{qwen2vl} in zero-shot mode with a structured prompt instructing the model to: (1) read all text/labels on packaging, (2) identify each food item, (3) classify into the 21 categories. Processed at reduced resolution on a single NVIDIA A100 GPU.
+\textbf{Model.} Qwen2.5-VL-7B-Instruct \cite{qwen2vl}, a 7-billion parameter open-source VLM with instruction-following capabilities. Unlike Florence-2 (0.7B), this model has much more world knowledge from large-scale pre-training.
+
+\textbf{Chain-of-thought prompting.} Instead of simply asking ``classify this image,'' we use a structured prompt that guides the model through explicit reasoning steps:
+\begin{enumerate}[nosep,leftmargin=1.5em]
+  \item \textbf{Read} all text, labels, and brand names visible on packaging
+  \item \textbf{Identify} each distinct food item in the image
+  \item \textbf{Classify} each item into exactly one of the 21 predefined categories
+  \item \textbf{Output} a structured JSON response
+\end{enumerate}
+The prompt includes the complete list of 21 valid categories, two few-shot examples demonstrating multi-label classification, and disambiguation rules for confusable categories (e.g., ``pasta = Carbohydrate Meal'' vs ``canned ravioli = Ready Meals''). No training data is used --- the model relies entirely on its pre-trained knowledge.
+
+\textbf{Technical details.} Images were processed at reduced resolution (max $256 \times 28^2 \approx 200$K pixels, vs.\ default 1M) to fit within A100 40GB GPU memory. We used SDPA attention in bf16 precision. Each image takes approximately 4.7 seconds to process.
 
 \begin{table}[h]
 \centering
@@ -410,6 +470,11 @@ M.~Klasson, C.~Zhang, and H.~Kjellstr\"om,
 Qwen Team,
 ``Qwen2.5-VL: Enhancing Vision-Language Model's Perception of the World at Any Resolution,''
 \textit{arXiv preprint arXiv:2502.13923}, 2025.
+
+\bibitem{khosla2020supcon}
+P.~Khosla et al.,
+``Supervised Contrastive Learning,''
+\textit{NeurIPS}, 2020.
 
 \end{thebibliography}
 
