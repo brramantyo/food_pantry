@@ -103,7 +103,7 @@ def convert_coco_to_yolo(
                 if cat_id not in EXCLUDED_COCO_IDS:
                     seq_id = coco_to_seq[cat_id]
                     bbox = ann["bbox"]  # [x, y, width, height]
-                    x, y, w, h = bbox
+                    x, y, w, h = [float(v) for v in bbox]
                     x_center = (x + w / 2) / img_width
                     y_center = (y + h / 2) / img_height
                     w_norm = w / img_width
