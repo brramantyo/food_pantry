@@ -39,7 +39,7 @@ from collections import Counter, defaultdict
 import numpy as np
 import torch
 from PIL import Image
-from transformers import AutoModelForCausalLM, AutoProcessor, Qwen2VLForConditionalGeneration
+from transformers import AutoModelForCausalLM, AutoModelForImageTextToText, AutoProcessor
 from peft import PeftModel
 
 from usda_matcher import USDAMatcher
@@ -221,23 +221,27 @@ def main():
 
     # ── Load VLM (Qwen2.5-VL) ─────────────────────────────────────────
     print(f"\nLoading VLM: {args.vlm_model}")
-    vlm_processor = AutoProcessor.from_pretrained(args.vlm_model, trust_remote_code=True)
+    vlm_processor = AutoProcessor.from_pretrained(
+        args.vlm_model, trust_remote_code=True,
+        min_pixels=128*28*28,    # ~100K
+        max_pixels=256*28*28,    # ~200K (keep VRAM reasonable)
+    )
 
-    # Try flash_attention_2 first, fallback to sdpa
+    # Try flash_attention_2 first, fallback to eager
     try:
-        vlm_model = Qwen2VLForConditionalGeneration.from_pretrained(
+        vlm_model = AutoModelForImageTextToText.from_pretrained(
             args.vlm_model,
             torch_dtype=amp_dtype or torch.float32,
             attn_implementation="flash_attention_2",
         ).to(device).eval()
         print("  VLM loaded with flash_attention_2 ✓")
     except Exception:
-        vlm_model = Qwen2VLForConditionalGeneration.from_pretrained(
+        vlm_model = AutoModelForImageTextToText.from_pretrained(
             args.vlm_model,
             torch_dtype=amp_dtype or torch.float32,
-            attn_implementation="sdpa",
+            attn_implementation="eager",
         ).to(device).eval()
-        print("  VLM loaded with sdpa ✓")
+        print("  VLM loaded with eager ✓")
 
     # ── Load USDA matcher ──────────────────────────────────────────────
     matcher = USDAMatcher(usda_dir=args.usda_dir)
