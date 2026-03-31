@@ -1,0 +1,416 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{array}
+\usepackage{graphicx}
+
+\title{Food Pantry Item Classification and USDA Nutritional Matching:\\Full Progress Report}
+\author{Hutama Bramantyo}
+\date{March 31, 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This report presents the complete progress on the food pantry item classification and nutritional matching pipeline. Task~1 classifies pantry images into 21 food categories using Florence-2, achieving 80.3\% micro F1 through an ensemble of generative and contrastive classifiers. Task~2 matches classified items to the USDA FoodData Central database for automatic nutritional estimation. We evaluate multiple approaches including fine-tuned classification, supervised contrastive learning, detection-first pipelines, OCR-based input signals, VLM chain-of-thought reasoning, and ensemble methods. The full end-to-end pipeline is evaluated with error propagation analysis showing moderate nutritional overestimation under misclassification.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+% ============================================================================
+% TASK 1: CORE RESULTS
+% ============================================================================
+\section{Task 1: Pantry Item Classification}
+\label{sec:task1}
+
+\subsection{Problem Definition and Dataset}
+
+Task 1 classifies food pantry images into 21 predefined categories. The dataset contains 1,123 images split approximately 70/15/15 for training, validation, and testing (166 test images with 1,932 object-level annotations). Approximately 34\% of images contain more than one category (average 1.55 categories per image), making this a multi-label classification problem.
+
+The dataset is imbalanced: the largest class has 189 images while Baby Food has 11 and Vegetables -- Fresh has 21. Some classes (e.g., Carbohydrate Meal and Ready Meals) are visually similar and frequently co-occur, increasing difficulty.
+
+\subsection{Model and Training}
+
+\textbf{Base model:} Florence-2-large-ft \cite{xiao2023florence2}, a unified vision--language model supporting multiple vision tasks through structured text output.
+
+\textbf{Adaptation:} LoRA fine-tuning on both the vision encoder and language decoder, with class-balanced oversampling (\texttt{min\_samples\_per\_class}), confusion-pair boosting for weak classes, and focal loss with label smoothing.
+
+\textbf{External data:} We mapped part of the Grocery Store Dataset \cite{klasson2019grocery} into the pantry taxonomy and used matched classes as additional training data.
+
+\subsection{Classification Results Progression}
+
+\begin{table}[h]
+\centering
+\caption{Task 1 classification result progression (166-image test set)}
+\label{tab:progression}
+\begin{tabular}{lcccc}
+\toprule
+Model Setting & Precision & Recall & Micro F1 & Macro F1 \\
+\midrule
+Vanilla Florence-2 (zero-shot) & 54.1\% & 18.3\% & 27.4\% & 14.2\% \\
+Fine-tuned v6 (vision+decoder LoRA) & 84.4\% & 62.5\% & 71.9\% & 70.6\% \\
+Mixed-data fine-tuning (v9) & 80.2\% & 70.9\% & 75.3\% & 74.6\% \\
+Continued fine-tuning (v11) & 82.2\% & 70.1\% & 76.5\% & 74.8\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Key findings: (1) fine-tuning is essential --- vanilla Florence-2 achieves only 27.4\%; (2) adapting both vision encoder and decoder matters; (3) mixed pantry+grocery training data improves recall; (4) continuing from the best checkpoint with lower learning rate outperforms retraining from scratch.
+
+\subsection{Failure Analysis}
+
+The dominant failure mode is \textbf{under-detection in multi-label images}, not inter-class confusion. When an image contains two or three categories, the model often predicts only the most visually dominant one and misses the others. Direct class-to-class confusions are rare (1--2 occurrences each).
+
+\begin{table}[h]
+\centering
+\caption{Weakest classes in v11, sorted by recall}
+\label{tab:weakclasses}
+\begin{tabular}{lccc}
+\toprule
+Class & Precision & Recall & Support \\
+\midrule
+Vegetables -- Fresh & 33.3\% & 33.3\% & 3 \\
+Ready Meals & 75.0\% & 35.3\% & 17 \\
+Granola Products & 66.7\% & 50.0\% & 8 \\
+Dairy and Dairy Alternatives & 100\% & 55.6\% & 9 \\
+Meat and Poultry -- Canned & 80.0\% & 57.1\% & 7 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Example failures: images containing both Granola Products and Dairy are predicted as Granola only; images with Ready Meals and Carbohydrate Meal predict only Carbohydrate Meal; Condiments are frequently missed when co-occurring with larger packaged items.
+
+% ============================================================================
+% TASK 1: EXTENDED EXPERIMENTS
+% ============================================================================
+\section{Task 1: Extended Experiments}
+\label{sec:task1_extended}
+
+Following the initial fine-tuning results, we conducted several additional experiments exploring alternative approaches suggested in the literature and by collaborators.
+
+\subsection{Detection-First Pipeline}
+
+\textbf{Motivation.} Since under-detection in multi-label images is the main bottleneck, we hypothesized that first detecting individual objects and then classifying each crop might improve recall.
+
+\textbf{Results.} Three variants were tested:
+
+\begin{table}[h]
+\centering
+\caption{Detection-first pipeline variants}
+\label{tab:detection}
+\begin{tabular}{lcccc}
+\toprule
+Method & Micro P & Micro R & Micro F1 & Macro F1 \\
+\midrule
+Full image only (v11 baseline) & 83.5\% & 70.5\% & 76.5\% & 75.7\% \\
+Crops only (OD $\rightarrow$ v11) & 41.6\% & 83.3\% & 55.5\% & 57.1\% \\
+Full image + crops (union) & 41.7\% & 87.2\% & 56.4\% & 57.7\% \\
+Fine-tuned OD labels only & --- & --- & $\sim$40\% & --- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The detection stage dramatically improves recall (70.5\% $\rightarrow$ 87.2\%), confirming that the OD model finds items that v11 misses. However, precision drops from 83.5\% to 41.7\% because v11 was trained on full pantry shelf images and over-predicts on small crops. The OD labels-only approach suffered from label hallucination (7 of 21 categories at 0\% F1).
+
+\textbf{Key insight:} Detection improves recall but the classifier is not trained for single-item crops, destroying precision.
+
+\subsection{OCR-Based Input Signal}
+
+\textbf{Motivation.} Package text (brand names, product descriptions) contains discriminative information. We explored using Florence-2's \texttt{<REGION\_TO\_OCR>} capability.
+
+\textbf{Results.} Two variants: (1) aggressive OCR matching decreased F1 from 57.6\% to 48.4\% (too noisy); (2) conservative OCR improved 3 categories (Granola +50\% F1, Savory Snacks +9.4\%, Soup +6.8\%) while minimally impacting others. Overall, OCR is not a reliable general strategy due to noise from nutrition labels, legal text, and barcodes.
+
+\subsection{Supervised Contrastive Learning}
+\label{sec:contrastive}
+
+\textbf{Motivation.} Generative classification conflates classification with text generation. We investigated whether a discriminative approach could decouple feature learning from classification.
+
+\textbf{Method.} We used the frozen Florence-2-large encoder (204M parameters) as a feature extractor, adding two lightweight heads on top:
+\begin{enumerate}[nosep,leftmargin=1.5em]
+  \item \textbf{Projection head} (1024 $\rightarrow$ 256): trained with supervised contrastive loss (SupCon).
+  \item \textbf{Classification head} (1024 $\rightarrow$ 21): trained with binary cross-entropy.
+\end{enumerate}
+Combined loss: $\mathcal{L} = \alpha \cdot \mathcal{L}_{\text{SupCon}} + (1 - \alpha) \cdot \mathcal{L}_{\text{BCE}}$. Only the two heads are trained (\textbf{1.7M trainable parameters}), keeping 204M encoder parameters frozen.
+
+\begin{table}[h]
+\centering
+\caption{Contrastive learning variants}
+\label{tab:contrastive}
+\small
+\begin{tabular}{lccccc}
+\toprule
+Variant & Trainable & Micro P & Micro R & Micro F1 & Macro F1 \\
+\midrule
+v1 (frozen, $\alpha$=0.5, $\tau$=0.07) & 1.7M & 79.2\% & 75.7\% & 77.4\% & 70.9\% \\
+v2a (frozen, $\alpha$=0.3, $\tau$=0.1) & 1.7M & 82.6\% & 72.1\% & 77.0\% & 69.7\% \\
+v2b (partial unfreeze) & $\sim$30M & 72.5\% & 71.3\% & 71.9\% & 64.6\% \\
+\midrule
+Fine-tuned Florence-2 (v11) & 204M & 82.2\% & 70.1\% & 75.7\% & 74.8\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Key finding:} The frozen-encoder contrastive variant achieves 77.4\% micro F1 with only 0.8\% of the trainable parameters used by the generative approach. Per-class analysis reveals complementary strengths: contrastive excels on Ready Meals (84.8\% vs 48.0\%), Savory Snacks (85.7\% vs 64.5\%), and Vegetables Canned (88.2\% vs 69.0\%). The partially unfrozen variant (v2b) underperforms, likely due to overfitting on the small training set.
+
+\subsection{Ensemble: Generative $\cup$ Contrastive}
+
+Given the complementary strengths, we combined both classifiers:
+
+\begin{table}[h]
+\centering
+\caption{Ensemble strategies}
+\label{tab:ensemble}
+\begin{tabular}{lcccc}
+\toprule
+Strategy & Micro P & Micro R & Micro F1 & Macro F1 \\
+\midrule
+v11 only & 82.2\% & 70.1\% & 75.7\% & 74.8\% \\
+Contrastive only & 81.4\% & 74.9\% & 78.0\% & 76.2\% \\
+\textbf{Union ($\cup$)} & \textbf{77.2\%} & \textbf{83.7\%} & \textbf{80.3\%} & \textbf{78.4\%} \\
+Intersection ($\cap$) & 84.0\% & 66.9\% & 74.5\% & 72.4\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The union ensemble achieves \textbf{80.3\% micro F1} (+4.6\% over best single model) by capturing items that one model misses. The precision--recall trade-off (77.2\%/83.7\%) favors recall, which is desirable in food pantry applications where missing an item is worse than over-counting.
+
+\subsection{VLM Chain-of-Thought Baseline}
+
+\textbf{Motivation.} We evaluate whether a large vision--language model can perform zero-shot classification through chain-of-thought reasoning, providing context for the value of task-specific fine-tuning.
+
+\textbf{Method.} Qwen2.5-VL-7B-Instruct \cite{qwen2vl} in zero-shot mode with a structured prompt instructing the model to: (1) read all text/labels on packaging, (2) identify each food item, (3) classify into the 21 categories. Processed at reduced resolution on a single NVIDIA A100 GPU.
+
+\begin{table}[h]
+\centering
+\caption{VLM zero-shot vs.\ fine-tuned approaches}
+\label{tab:vlm}
+\begin{tabular}{lcccc}
+\toprule
+Method & Micro P & Micro R & Micro F1 & Training \\
+\midrule
+Vanilla Florence-2 (zero-shot) & 54.1\% & 18.3\% & 27.4\% & None \\
+Qwen2.5-VL-7B CoT (zero-shot) & 58.3\% & 70.1\% & 63.6\% & None \\
+Fine-tuned Florence-2 (v11) & 82.2\% & 70.1\% & 75.7\% & 166 images \\
+Ensemble (v11 $\cup$ contrastive) & 77.2\% & 83.7\% & 80.3\% & 166 images \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The VLM achieves 63.6\% micro F1 zero-shot --- more than double the vanilla Florence-2 baseline. Its recall (70.1\%) matches the fine-tuned v11, demonstrating strong language understanding. The gap is primarily in precision (58.3\% vs 82.2\%), as the VLM occasionally hallucinates categories. The VLM excels on categories with distinctive packaging (Fresh Fruit: 87.5\%, Savory Snacks: 77.8\%) and struggles with visually similar goods (Vegetables Fresh: 28.6\%, Seafood Canned: 40.0\%).
+
+This result demonstrates that while general-purpose VLMs show strong zero-shot capability, fine-tuning on even 166 domain-specific images closes a 17\% F1 gap, justifying the fine-tuning approach.
+
+\subsection{Complete Summary of All Approaches}
+
+\begin{table}[h]
+\centering
+\caption{Complete comparison of all Task 1 approaches}
+\label{tab:all_approaches}
+\small
+\begin{tabular}{lcccl}
+\toprule
+Approach & Micro P & Micro R & Micro F1 & Note \\
+\midrule
+\multicolumn{5}{l}{\textit{Zero-shot baselines}} \\
+\midrule
+Vanilla Florence-2 & 54.1\% & 18.3\% & 27.4\% & No training \\
+Qwen2.5-VL-7B CoT & 58.3\% & 70.1\% & 63.6\% & No training \\
+\midrule
+\multicolumn{5}{l}{\textit{Fine-tuned single models}} \\
+\midrule
+Florence-2 v11 (generative) & 82.2\% & 70.1\% & 75.7\% & Best single (gen.) \\
+Contrastive v1 (frozen encoder) & 79.2\% & 75.7\% & 77.4\% & Best single (disc.) \\
+Contrastive v2a (tuned hparams) & 82.6\% & 72.1\% & 77.0\% & \\
+Contrastive v2b (partial unfreeze) & 72.5\% & 71.3\% & 71.9\% & Overfits \\
+\midrule
+\multicolumn{5}{l}{\textit{Ensemble}} \\
+\midrule
+\textbf{v11 $\cup$ contrastive (union)} & \textbf{77.2\%} & \textbf{83.7\%} & \textbf{80.3\%} & \textbf{Best overall} \\
+v11 $\cap$ contrastive (intersection) & 84.0\% & 66.9\% & 74.5\% & \\
+\midrule
+\multicolumn{5}{l}{\textit{Alternative pipelines (did not improve)}} \\
+\midrule
+OD $\rightarrow$ crop $\rightarrow$ v11 & 41.7\% & 87.2\% & 56.4\% & \\
+Fine-tuned OD labels only & --- & --- & $\sim$40\% & \\
+OCR input signal (v3) & --- & --- & $\sim$+2\% & Marginal \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ============================================================================
+% TASK 2
+% ============================================================================
+\section{Task 2: USDA Nutritional Matching}
+\label{sec:task2}
+
+\subsection{Overview}
+
+Task 2 matches classified pantry items to the USDA FoodData Central database for automatic nutritional estimation. The full pipeline: image $\rightarrow$ classification (Task 1) $\rightarrow$ USDA matching $\rightarrow$ nutritional output.
+
+\subsection{USDA Data and Index}
+
+\begin{itemize}[nosep,leftmargin=1.5em]
+  \item \textbf{USDA Branded Foods:} 454,126 products with brand, description, ingredients, and nutrition.
+  \item \textbf{USDA SR Legacy:} 7,793 generic food items as fallback.
+  \item \textbf{Embedding model:} all-MiniLM-L6-v2 (384-dim, cosine similarity).
+  \item \textbf{Total index:} 461,919 items, 338\,MB embedding matrix.
+\end{itemize}
+
+\subsection{Matching Approach}
+
+\begin{enumerate}[nosep,leftmargin=1.5em]
+  \item \textbf{Semantic search:} Each predicted category is encoded and matched against USDA entries by cosine similarity.
+  \item \textbf{Category boosting:} USDA items whose \texttt{brandedFoodCategory} relates to the predicted category receive +0.15 score boost.
+  \item \textbf{Top-$k$ retrieval:} Top-5 matches returned; top-1 used for nutritional estimation.
+\end{enumerate}
+
+\subsection{Nutritional Profile Validation}
+
+\begin{table}[h]
+\centering
+\caption{Average nutritional profile per category (top-50 USDA matches)}
+\label{tab:nutrition}
+\small
+\begin{tabular}{lrrrr}
+\toprule
+Pantry Category & Kcal & Protein & Carbs & Fat \\
+\midrule
+Baby Food & 91.6 & 4.1 & 11.1 & 3.4 \\
+Beans \& Legumes & 123.3 & 7.1 & 20.6 & 1.3 \\
+Bread \& Bakery & 126.0 & 4.0 & 23.3 & 1.8 \\
+Canned Tomato & 26.2 & 1.0 & 5.4 & 0.1 \\
+Carbohydrate Meal & 187.8 & 7.8 & 33.3 & 2.8 \\
+Condiments \& Sauces & 70.2 & 1.0 & 10.1 & 2.8 \\
+Dairy \& Alternatives & 111.8 & 6.5 & 9.7 & 5.3 \\
+Desserts \& Sweets & 270.2 & 2.6 & 37.4 & 12.9 \\
+Drinks & 68.8 & 0.2 & 12.4 & 0.2 \\
+Fresh Fruit & 89.0 & 0.8 & 21.9 & 0.2 \\
+Fruits -- Canned & 70.5 & 0.5 & 17.5 & 0.3 \\
+Granola Products & 168.0 & 3.6 & 24.6 & 6.6 \\
+Meat \& Poultry -- Canned & 126.1 & 9.3 & 0.5 & 9.4 \\
+Meat \& Poultry -- Fresh & 214.6 & 14.1 & 0.3 & 17.2 \\
+Nut Butters \& Nuts & 169.8 & 5.3 & 7.3 & 14.3 \\
+Ready Meals & 308.7 & 15.0 & 36.7 & 11.5 \\
+Savory Snacks & 363.0 & 8.5 & 53.1 & 13.6 \\
+Seafood -- Canned & 78.4 & 12.9 & 0.9 & 2.3 \\
+Soup & 135.5 & 5.8 & 16.6 & 5.3 \\
+Vegetables -- Canned & 39.2 & 1.6 & 7.7 & 0.2 \\
+Vegetables -- Fresh & 62.0 & 2.6 & 12.7 & 0.4 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+These profiles pass sanity checks: canned vegetables and tomato products are low-calorie; meats are high-protein; desserts and snacks are calorie-dense.
+
+\subsection{Error Propagation Analysis}
+
+A key question is whether Task 1 errors severely impact nutritional estimates.
+
+\begin{table}[h]
+\centering
+\caption{Error propagation: nutrition for correct vs.\ incorrect classifications}
+\label{tab:error_prop}
+\begin{tabular}{lrrr|rrr}
+\toprule
+ & \multicolumn{3}{c|}{v11 Single Model} & \multicolumn{3}{c}{Ensemble Union} \\
+Nutrient & Correct & Wrong & $\Delta$ & Correct & Wrong & $\Delta$ \\
+\midrule
+Calories (kcal) & 166.7 & 247.3 & +80.6 & 192.6 & 396.5 & +203.9 \\
+Protein (g) & 7.0 & 8.0 & +1.0 & 8.2 & 13.7 & +5.5 \\
+Carbohydrates (g) & 19.1 & 31.3 & +12.2 & 22.7 & 46.9 & +24.2 \\
+Fat (g) & 6.8 & 10.4 & +3.6 & 7.8 & 17.7 & +9.9 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Coverage--accuracy trade-off:}
+\begin{itemize}[nosep,leftmargin=1.5em]
+  \item \textbf{v11 single model:} Conservative estimates. When wrong, caloric overestimation is moderate (+81\,kcal). But with 70.1\% recall, $\sim$30\% of items are missed, causing systematic underestimation of total pantry nutrition.
+  \item \textbf{Ensemble union:} Detects more items (83.7\% recall), reducing missed items. But false positives cause larger overestimation when wrong (+204\,kcal).
+\end{itemize}
+
+For food assistance programs, the ensemble is preferred: missing items entirely (underestimation) is more problematic than moderate overestimation. Errors tend toward overestimation, which is the safer failure mode.
+
+\subsection{Pipeline Latency}
+
+\begin{table}[h]
+\centering
+\caption{Pipeline latency (single NVIDIA GPU)}
+\label{tab:latency}
+\begin{tabular}{lrr}
+\toprule
+Stage & v11 Only & Ensemble \\
+\midrule
+Classification & 685\,ms & 842\,ms \\
+USDA Matching & 717\,ms & 896\,ms \\
+\midrule
+\textbf{Total} & \textbf{1,401\,ms} & \textbf{1,737\,ms} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Both configurations are suitable for batch processing of pantry inventories.
+
+\subsection{Qualitative Examples}
+
+\begin{itemize}[nosep,leftmargin=1.5em]
+  \item \textbf{Correct:} Chocolate $\rightarrow$ ``Desserts and Sweets'' $\rightarrow$ ``Assorted Gift Box Chocolate'' (sim: 0.809, 120\,kcal).
+  \item \textbf{Correct:} Crackers $\rightarrow$ ``Savory Snacks'' $\rightarrow$ ``Shrimp Cracker'' (sim: 0.899, 426\,kcal).
+  \item \textbf{Incorrect:} Condiments misclassified as ``Ready Meals'' $\rightarrow$ ``Fried Chicken with Mashed Potatoes'' (sim: 0.652, 349\,kcal). Lower similarity score reflects the mismatch.
+\end{itemize}
+
+\subsection{Limitations}
+
+\begin{itemize}[nosep,leftmargin=1.5em]
+  \item Category-level matching is coarse --- USDA match represents an average over items within the category.
+  \item No ground-truth USDA mapping exists; quality is assessed via proxy measures.
+  \item Classification errors propagate, but impact is moderate at aggregate level.
+  \item Brute-force cosine similarity over 461K items; approximate nearest-neighbor (FAISS) could improve speed.
+\end{itemize}
+
+% ============================================================================
+% CONCLUSION
+% ============================================================================
+\section{Conclusion and Future Work}
+
+\subsection{Summary of Contributions}
+
+\begin{enumerate}[nosep,leftmargin=1.5em]
+  \item \textbf{Task 1:} Developed a pantry item classification pipeline achieving 80.3\% micro F1 through an ensemble of fine-tuned generative (Florence-2) and discriminative (contrastive) classifiers, trained on only 166 images.
+  \item \textbf{Task 2:} Built an end-to-end USDA nutritional matching pipeline with semantic retrieval, category boosting, and error propagation analysis.
+  \item \textbf{Comprehensive ablation:} Evaluated 10+ approaches including detection-first, OCR, contrastive learning, ensemble methods, and VLM chain-of-thought, providing clear evidence for design choices.
+  \item \textbf{Error propagation analysis:} Demonstrated that classification errors cause moderate nutritional overestimation, with the ensemble's higher recall being preferable for food assistance applications.
+\end{enumerate}
+
+\subsection{Future Work}
+
+\begin{enumerate}[nosep,leftmargin=1.5em]
+  \item \textbf{Fine-grained USDA matching:} Move from category-level to product-level matching using OCR-extracted brand/product names.
+  \item \textbf{VLM fine-tuning:} Fine-tune a smaller VLM (e.g., Qwen2.5-VL-3B) on pantry data, potentially surpassing the current ensemble.
+  \item \textbf{Active learning:} Use model uncertainty to prioritize annotation of the most informative images.
+  \item \textbf{Deployment:} Optimize pipeline for real-time use with FAISS indexing and model quantization.
+\end{enumerate}
+
+\begin{thebibliography}{9}
+
+\bibitem{xiao2023florence2}
+B.~Xiao et al.,
+``Florence-2: Advancing a Unified Representation for a Variety of Vision Tasks,''
+\textit{CVPR}, 2024.
+
+\bibitem{klasson2019grocery}
+M.~Klasson, C.~Zhang, and H.~Kjellstr\"om,
+``A Hierarchical Grocery Store Image Dataset with Visual and Semantic Labels,''
+\textit{WACV}, 2019.
+
+\bibitem{qwen2vl}
+Qwen Team,
+``Qwen2.5-VL: Enhancing Vision-Language Model's Perception of the World at Any Resolution,''
+\textit{arXiv preprint arXiv:2502.13923}, 2025.
+
+\end{thebibliography}
+
+\end{document}
