@@ -205,7 +205,7 @@ def main(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Fine-tune YOLOv11 on COCO pantry data")
-    parser.add_argument("--data-dir", default="train_val_data/", help="COCO data directory with train/ and valid/")
+    parser.add_argument("--data-dir", default=".", help="COCO data directory with train/ and valid/")
     parser.add_argument("--output-dir", default="yolo_output/", help="Output directory for labels and model")
     parser.add_argument("--epochs", type=int, default=50, help="Number of epochs")
     parser.add_argument("--batch-size", type=int, default=16, help="Batch size")

@@ -375,15 +375,15 @@ def evaluate_od_contrastive(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="OD → Crop → Contrastive evaluation")
-    parser.add_argument("--base-model", default="microsoft/florence-2-base", help="Florence-2 base model")
+    parser.add_argument("--base-model", default="microsoft/Florence-2-large-ft", help="Florence-2 base model")
     parser.add_argument("--od-checkpoint", default="checkpoints_od_v1/best_model", help="OD LoRA checkpoint")
     parser.add_argument(
         "--contrastive-checkpoint",
         default="checkpoints_contrastive/best_model.pt",
         help="Contrastive model checkpoint",
     )
-    parser.add_argument("--data-dir", default="test_data/", help="Data directory")
-    parser.add_argument("--jsonl", default="test_data/test.jsonl", help="Test JSONL file")
+    parser.add_argument("--data-dir", default=".", help="Data directory")
+    parser.add_argument("--jsonl", default=".test.jsonl", help="Test JSONL file")
     parser.add_argument("--output", default="eval_od_contrastive_results.json", help="Output file")
     parser.add_argument("--threshold", type=float, default=0.5, help="Classification threshold for full image")
     parser.add_argument("--crop-threshold", type=float, default=0.6, help="Classification threshold for crops")
