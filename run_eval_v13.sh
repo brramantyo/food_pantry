@@ -1,16 +1,12 @@
 #!/bin/bash
 #SBATCH --job-name=eval_v13
-#SBATCH --partition=gpuA100x4
-#SBATCH --account=bgnn-delta-gpu
-#SBATCH --gpus-per-node=1
+#SBATCH --partition=general
+#SBATCH --gres=gpu:1
 #SBATCH --time=00:30:00
 #SBATCH --mem=40G
 #SBATCH --output=eval_v13_%j.log
-#SBATCH --nodes=1
-#SBATCH --ntasks=1
 
 cd ~/food_pantry
-source ~/usd_env/bin/activate
 
 echo "=== Evaluating v13 (direct classification on full images) ==="
 echo "=== This checks that v13 didn't regress on full-image classification ==="

@@ -1,16 +1,12 @@
 #!/bin/bash
 #SBATCH --job-name=train_v13
-#SBATCH --partition=gpuA100x4
-#SBATCH --account=bgnn-delta-gpu
-#SBATCH --gpus-per-node=1
+#SBATCH --partition=general
+#SBATCH --gres=gpu:1
 #SBATCH --time=03:00:00
 #SBATCH --mem=40G
 #SBATCH --output=train_v13_%j.log
-#SBATCH --nodes=1
-#SBATCH --ntasks=1
 
 cd ~/food_pantry
-source ~/usd_env/bin/activate
 
 echo "=== Training v13: Mixed full-image + crop classifier ==="
 echo "=== Continue from v11, learn to handle both shelf photos and individual crops ==="

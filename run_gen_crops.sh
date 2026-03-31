@@ -1,16 +1,12 @@
 #!/bin/bash
 #SBATCH --job-name=gen_crops
-#SBATCH --partition=gpuA100x4
-#SBATCH --account=bgnn-delta-gpu
-#SBATCH --gpus-per-node=1
+#SBATCH --partition=general
+#SBATCH --gres=gpu:1
 #SBATCH --time=02:00:00
 #SBATCH --mem=40G
 #SBATCH --output=gen_crops_%j.log
-#SBATCH --nodes=1
-#SBATCH --ntasks=1
 
 cd ~/food_pantry
-source ~/usd_env/bin/activate
 
 echo "=== Step 1: Generate crop dataset from GT bboxes + OD detections ==="
 echo "=== GT crops: use COCO annotations directly ==="
