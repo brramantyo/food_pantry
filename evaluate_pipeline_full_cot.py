@@ -166,17 +166,133 @@ def parse_v11_prediction(text):
 
 
 def parse_json_from_text(text):
+    """Aggressively extract JSON from messy VLM output."""
     text = text.strip()
+    # Remove markdown code blocks
     text = re.sub(r'```json\s*', '', text)
-    text = re.sub(r'```\s*', '', text)
-    start = text.find("{")
-    end = text.rfind("}") + 1
-    if start >= 0 and end > start:
+    text = re.sub(r'```\s*$', '', text)
+    # Remove hallucinated code fragments (e.g., "addCriterion")
+    text = re.sub(r'\baddCriterion\b.*', '', text)
+
+    # Fix single quotes → double quotes (VLM sometimes mixes)
+    def fix_quotes(s):
+        # Only replace single quotes that look like JSON string delimiters
+        # This is imperfect but catches the common cases
+        s = re.sub(r"'(\w+)'(\s*:)", r'"\1"\2', s)  # 'key': → "key":
+        s = re.sub(r":\s*'([^']*)'", r': "\1"', s)   # : 'value' → : "value"
+        return s
+
+    # Try to find and parse JSON object
+    for attempt_text in [text, fix_quotes(text)]:
+        # Try top-level object
+        start = attempt_text.find("{")
+        end = attempt_text.rfind("}") + 1
+        if start >= 0 and end > start:
+            try:
+                return json.loads(attempt_text[start:end])
+            except json.JSONDecodeError:
+                pass
+
+        # Try array
+        arr_start = attempt_text.find("[")
+        arr_end = attempt_text.rfind("]") + 1
+        if arr_start >= 0 and arr_end > arr_start:
+            try:
+                arr = json.loads(attempt_text[arr_start:arr_end])
+                if isinstance(arr, list) and arr:
+                    return {"products": arr}
+            except json.JSONDecodeError:
+                pass
+
+    # Last resort: try to repair truncated JSON
+    for attempt_text in [text, fix_quotes(text)]:
+        start = attempt_text.find("{")
+        if start < 0:
+            start = attempt_text.find("[")
+        if start >= 0:
+            fragment = attempt_text[start:]
+            # Try adding various closing sequences
+            for suffix in ['"}]}', '"}]', '"]}}', '"}]}', '"}]}\n```', 
+                          '"}]\n```', '}]}', '}]', '"]', '"}']:
+                try:
+                    result = json.loads(fragment + suffix)
+                    if isinstance(result, list):
+                        return {"products": result}
+                    if isinstance(result, dict):
+                        return result
+                except json.JSONDecodeError:
+                    pass
+
+    # Extract individual product objects with regex
+    products = []
+    for m in re.finditer(r'\{[^{}]{20,}\}', text):
         try:
-            return json.loads(text[start:end])
+            obj = json.loads(m.group())
+            if any(k in obj for k in ("category", "product_name", "brand")):
+                products.append(obj)
         except json.JSONDecodeError:
-            pass
+            # Try with quote fixing
+            try:
+                obj = json.loads(fix_quotes(m.group()))
+                if any(k in obj for k in ("category", "product_name", "brand")):
+                    products.append(obj)
+            except json.JSONDecodeError:
+                pass
+    if products:
+        return {"products": products}
+
     return None
+
+
+def fuzzy_match_category(vlm_category, valid_categories):
+    """Match VLM's approximate category name to exact pantry category."""
+    if not vlm_category:
+        return None
+    vlm_lower = vlm_category.lower().strip()
+    
+    # Exact match first
+    canonical = CANONICAL_MAP.get(vlm_lower)
+    if canonical:
+        return canonical
+    
+    # Partial/fuzzy matching
+    best_match = None
+    best_score = 0
+    for cat in valid_categories:
+        cat_lower = cat.lower()
+        # Check if VLM category is substring of valid category or vice versa
+        if vlm_lower in cat_lower or cat_lower in vlm_lower:
+            score = len(vlm_lower)  # prefer longer matches
+            if score > best_score:
+                best_score = score
+                best_match = cat
+        # Check word overlap
+        vlm_words = set(vlm_lower.replace("-", " ").split())
+        cat_words = set(cat_lower.replace("-", " ").split())
+        overlap = len(vlm_words & cat_words)
+        if overlap >= 2 and overlap > best_score:
+            best_score = overlap
+            best_match = cat
+    
+    return best_match
+
+
+def extract_usda_query(prod_dict):
+    """Extract USDA query from product dict, trying many possible key names."""
+    # Try any key containing 'query' or 'search'
+    for key, val in prod_dict.items():
+        if isinstance(val, str) and ('query' in key.lower() or 'search' in key.lower()):
+            if val and len(val) > 2 and val != "?":
+                return val
+    
+    # Build from components
+    parts = []
+    for key in ("brand", "product_name", "details"):
+        val = prod_dict.get(key, "")
+        if val and val not in ("unknown", "Unknown", "unspecified", "?", "N/A"):
+            parts.append(val)
+    
+    return " ".join(parts) if parts else None
 
 
 # ── VLM Prompts ────────────────────────────────────────────────────────────────
@@ -467,32 +583,20 @@ def main():
 
             if vlm_parsed and "products" in vlm_parsed:
                 for prod in vlm_parsed["products"]:
-                    cat = normalize_category(prod.get("category", ""))
-                    if cat not in VALID_CATEGORIES:
-                        # Try matching by checking all predicted cats
-                        for pc in pred_cats:
-                            if pc.lower() in str(prod).lower():
-                                cat = pc
-                                break
-                    if cat not in VALID_CATEGORIES:
+                    if not isinstance(prod, dict):
+                        continue
+                    # Fuzzy match category
+                    raw_cat = prod.get("category", "")
+                    cat = fuzzy_match_category(raw_cat, pred_cats)
+                    if not cat:
+                        cat = fuzzy_match_category(raw_cat, VALID_CATEGORIES)
+                    if not cat:
                         continue
 
-                    # Accept multiple key names for USDA query
-                    usda_query = (prod.get("usda_query")
-                                  or prod.get("us_query")
-                                  or prod.get("query")
-                                  or prod.get("search_query")
-                                  or "")
-                    # If no query key found, build from product info
-                    if not usda_query or usda_query == "?" or len(usda_query) < 3:
-                        parts = []
-                        if prod.get("brand") and prod["brand"] != "unknown":
-                            parts.append(prod["brand"])
-                        if prod.get("product_name") and prod["product_name"] != "unknown":
-                            parts.append(prod["product_name"])
-                        if prod.get("details") and prod["details"] not in ("unknown", "unspecified"):
-                            parts.append(prod["details"])
-                        usda_query = " ".join(parts) if parts else cat
+                    # Extract query flexibly
+                    usda_query = extract_usda_query(prod)
+                    if not usda_query:
+                        usda_query = cat
 
                     vlm_products[cat] = prod
                     cot_matches = matcher.search_hybrid(
