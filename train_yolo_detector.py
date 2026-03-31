@@ -114,9 +114,9 @@ def convert_coco_to_yolo(
 def create_data_yaml(output_dir: str, train_images_dir: str, val_images_dir: str, yaml_path: str) -> None:
     """Create data.yaml for ultralytics."""
     data = {
-        "path": str(Path(output_dir).parent),
-        "train": train_images_dir,
-        "val": val_images_dir,
+        "path": str(Path(output_dir).resolve()),
+        "train": str(Path(train_images_dir).resolve()),
+        "val": str(Path(val_images_dir).resolve()),
         "nc": 21,
         "names": {i: cat for i, cat in enumerate(CATEGORIES)},
     }
@@ -176,8 +176,6 @@ def main(
 
     train_coco_path = data_dir / "train" / "_annotations.coco.json"
     val_coco_path = data_dir / "valid" / "_annotations.coco.json"
-    train_images_dir = data_dir / "train"
-    val_images_dir = data_dir / "valid"
 
     logger.info("Loading COCO annotations...")
     train_coco = load_coco_annotations(str(train_coco_path))
@@ -187,17 +185,55 @@ def main(
     coco_to_seq = build_category_mapping(train_coco)
     logger.info(f"Mapped {len(coco_to_seq)} COCO categories to 0-20")
 
+    # YOLO expects: dataset_root/images/train/, dataset_root/labels/train/
+    # It auto-maps images↔labels by replacing /images/ with /labels/ in path
+    yolo_root = output_dir / "dataset"
+    yolo_images_train = yolo_root / "images" / "train"
+    yolo_images_val = yolo_root / "images" / "val"
+    yolo_labels_train = yolo_root / "labels" / "train"
+    yolo_labels_val = yolo_root / "labels" / "val"
+
+    for d in [yolo_images_train, yolo_images_val, yolo_labels_train, yolo_labels_val]:
+        d.mkdir(parents=True, exist_ok=True)
+
+    # Symlink images into YOLO structure
+    import glob
+    logger.info("Symlinking train images...")
+    for img_file in (data_dir / "train").glob("*"):
+        if img_file.suffix.lower() in (".jpg", ".jpeg", ".png", ".bmp", ".webp"):
+            dst = yolo_images_train / img_file.name
+            if not dst.exists():
+                dst.symlink_to(img_file.resolve())
+
+    logger.info("Symlinking val images...")
+    for img_file in (data_dir / "valid").glob("*"):
+        if img_file.suffix.lower() in (".jpg", ".jpeg", ".png", ".bmp", ".webp"):
+            dst = yolo_images_val / img_file.name
+            if not dst.exists():
+                dst.symlink_to(img_file.resolve())
+
     logger.info("Converting train annotations to YOLO format...")
-    train_labels_dir = output_dir / "labels" / "train"
-    convert_coco_to_yolo(train_coco, coco_to_seq, str(train_images_dir), str(train_labels_dir))
+    convert_coco_to_yolo(train_coco, coco_to_seq, str(data_dir / "train"), str(yolo_labels_train))
 
     logger.info("Converting val annotations to YOLO format...")
-    val_labels_dir = output_dir / "labels" / "val"
-    convert_coco_to_yolo(val_coco, coco_to_seq, str(val_images_dir), str(val_labels_dir))
+    convert_coco_to_yolo(val_coco, coco_to_seq, str(data_dir / "valid"), str(yolo_labels_val))
+
+    # Count label files for verification
+    n_train_labels = len(list(yolo_labels_train.glob("*.txt")))
+    n_val_labels = len(list(yolo_labels_val.glob("*.txt")))
+    n_train_images = len(list(yolo_images_train.glob("*")))
+    n_val_images = len(list(yolo_images_val.glob("*")))
+    logger.info(f"Train: {n_train_images} images, {n_train_labels} labels")
+    logger.info(f"Val: {n_val_images} images, {n_val_labels} labels")
 
     logger.info("Creating data.yaml...")
     yaml_path = output_dir / "data.yaml"
-    create_data_yaml(str(output_dir), str(train_images_dir), str(val_images_dir), str(yaml_path))
+    create_data_yaml(
+        str(yolo_root),
+        str(yolo_images_train),
+        str(yolo_images_val),
+        str(yaml_path),
+    )
 
     logger.info("Training YOLOv11...")
     train_yolo(str(yaml_path), str(output_dir), epochs=epochs, batch_size=batch_size, imgsz=imgsz, model_name=model)
