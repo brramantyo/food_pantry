@@ -15,8 +15,8 @@ source ~/usd_env/bin/activate
 # Install flash-attn if not present (saves massive VRAM)
 pip install flash-attn --no-build-isolation 2>/dev/null || echo "flash-attn not installed, will use sdpa"
 
-echo "=== VLM Chain-of-Thought: Qwen2.5-VL-7B-Instruct ==="
-echo "=== Zero-shot classification with step-by-step reasoning ==="
+echo "=== VLM Chain-of-Thought v2: Improved Prompt ==="
+echo "=== Few-shot + label-reading + category disambiguation ==="
 echo "=== Running on Delta (A100 GPU) ==="
 echo ""
 
@@ -27,6 +27,6 @@ python evaluate_vlm_cot.py \
   --model Qwen/Qwen2.5-VL-7B-Instruct \
   --data-dir . \
   --jsonl ./florence2_data/test_v5.jsonl \
-  --output ./eval_vlm_cot.json \
+  --output ./eval_vlm_cot_v2.json \
   --max-new-tokens 1024 \
   --bf16

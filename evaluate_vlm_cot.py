@@ -143,25 +143,39 @@ def normalize_category(name):
 
 CATEGORIES_LIST = "\n".join(f"  - {c}" for c in sorted(VALID_CATEGORIES))
 
-COT_PROMPT = f"""You are a food pantry item classifier. Look at this image of food pantry items and classify them step by step.
+COT_PROMPT = f"""You are an expert food pantry item classifier. Your task is to look at an image of food pantry items and classify every visible item into the correct categories.
 
-**Step 1:** Describe what you see in the image. What food items are visible?
+**IMPORTANT: Read all text, labels, and brand names on the packaging carefully.** The text on packages is the most reliable signal for classification.
 
-**Step 2:** For each food item you identified, determine which of these 21 categories it belongs to:
+**The 21 valid categories are:**
 {CATEGORIES_LIST}
 
-**Step 3:** Output your final answer as a JSON object with this exact format:
-```json
-{{"categories": ["Category 1", "Category 2"]}}
-```
+**Classification rules:**
+- Each IMAGE may contain MULTIPLE items from DIFFERENT categories
+- Only output categories from the 21 listed above (exact spelling)
+- Read package labels to determine contents — don't guess from shape/color alone
+- "Carbohydrate Meal" = pasta, rice, noodles, mac & cheese, ramen
+- "Ready Meals" = complete frozen/shelf-stable meals (e.g., canned ravioli, frozen dinners, meal kits)
+- "Granola Products" = granola bars, oatmeal, cereal, breakfast bars
+- "Desserts and Sweets" = cookies, cake, candy, chocolate, pudding, icing
+- "Condiments and Sauces" = ketchup, mustard, salad dressing, cooking sauce, seasoning mix
+- "Dairy and Dairy Alternatives" = milk, cheese, yogurt, butter, non-dairy milk
+- Canned vegetables with NO meat = "Vegetables - Canned"
+- Canned tomato paste/sauce/diced = "Canned Tomato Products"
 
-Important rules:
-- Only use categories from the list above (exact spelling)
-- An image can contain items from MULTIPLE categories
-- Look carefully for ALL items, even small ones in the background
-- If you're unsure about an item, include it anyway
+**Example 1:**
+Image shows: A box of Barilla spaghetti, two cans of Hunt's tomato sauce, and a jar of Skippy peanut butter.
+Answer: {{"categories": ["Carbohydrate Meal", "Canned Tomato Products", "Nut Butters and Nuts"]}}
 
-Now analyze the image:"""
+**Example 2:**
+Image shows: A bag of Doritos chips, a can of Campbell's chicken noodle soup, and a package of Oreo cookies.
+Answer: {{"categories": ["Savory Snacks and Crackers", "Soup", "Desserts and Sweets"]}}
+
+**Now analyze the image below. Follow these steps:**
+1. Read ALL text/labels visible on packages
+2. Identify each distinct food item
+3. Map each item to exactly one of the 21 categories
+4. Output ONLY a JSON object: {{"categories": ["Category1", "Category2", ...]}}"""
 
 
 # ── Parse VLM Output ───────────────────────────────────────────────────────────
