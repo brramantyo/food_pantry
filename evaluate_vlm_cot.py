@@ -282,6 +282,12 @@ def main():
     parser.add_argument("--bf16", action="store_true")
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--max-new-tokens", type=int, default=1024)
+    parser.add_argument("--self-consistency", type=int, default=1,
+                        help="Number of samples for self-consistency voting (1=greedy, 3+=majority vote)")
+    parser.add_argument("--sc-temperature", type=float, default=0.7,
+                        help="Temperature for self-consistency sampling")
+    parser.add_argument("--sc-threshold", type=int, default=2,
+                        help="Min votes needed (default: majority = ceil(n/2))")
     args = parser.parse_args()
     
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -363,19 +369,43 @@ def main():
             return_tensors="pt", padding=True,
         ).to(device)
         
-        with torch.no_grad():
-            output_ids = model.generate(
-                **inputs,
-                max_new_tokens=args.max_new_tokens,
-                do_sample=False,  # Greedy for reproducibility
-            )
-        
-        # Decode only the generated part
-        generated_ids = output_ids[:, inputs.input_ids.shape[1]:]
-        output_text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
-        
-        # Parse
-        pred_cats = parse_vlm_output(output_text)
+        n_samples = args.self_consistency
+        if n_samples <= 1:
+            # Greedy decoding
+            with torch.no_grad():
+                output_ids = model.generate(
+                    **inputs,
+                    max_new_tokens=args.max_new_tokens,
+                    do_sample=False,
+                )
+            generated_ids = output_ids[:, inputs.input_ids.shape[1]:]
+            output_text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+            pred_cats = parse_vlm_output(output_text)
+        else:
+            # Self-consistency: sample n times, majority vote
+            from collections import Counter as Ctr
+            all_votes = Counter()  # category -> vote count
+            all_outputs = []
+            for s in range(n_samples):
+                with torch.no_grad():
+                    output_ids = model.generate(
+                        **inputs,
+                        max_new_tokens=args.max_new_tokens,
+                        do_sample=True,
+                        temperature=args.sc_temperature,
+                        top_p=0.9,
+                    )
+                generated_ids = output_ids[:, inputs.input_ids.shape[1]:]
+                out_text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+                all_outputs.append(out_text[:200])
+                sample_cats = parse_vlm_output(out_text)
+                for cat in sample_cats:
+                    all_votes[cat] += 1
+            
+            # Majority vote: category needs >= threshold votes
+            threshold = args.sc_threshold if args.sc_threshold else (n_samples // 2 + 1)
+            pred_cats = {cat for cat, count in all_votes.items() if count >= threshold}
+            output_text = f"[SC {n_samples}x] votes: {dict(all_votes)} | outputs: {all_outputs}"
         
         all_targets.append(target_cats)
         all_preds.append(pred_cats)
