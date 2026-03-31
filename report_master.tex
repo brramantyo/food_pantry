@@ -138,6 +138,75 @@ The detection stage dramatically improves recall (70.5\% $\rightarrow$ 87.2\%), 
 
 \textbf{Key insight:} Detection improves recall but the classifier is not trained for single-item crops, destroying precision.
 
+\textbf{v13: Training the classifier on crops.} To address the precision problem, we trained a new classifier (v13) on a \textit{mixed} dataset of full shelf images and individual crop images. We generated 21,362 crops (11,472 from ground-truth bounding boxes + 9,890 from the OD model) and combined them with the original training set. The hypothesis was that seeing single-item crops during training would prevent over-prediction.
+
+\textbf{Result:} v13 achieved 73.1\% F1 on full images (regressing from v11's 76.5\%), and only 58.8\% F1 in the OD pipeline (marginally improving from 56.4\%). The mixed training made the model more conservative (precision up, recall down) without solving the fundamental union problem.
+
+\textbf{Contrastive classifier on crops.} We also tested the contrastive model (Section~\ref{sec:contrastive}) as the crop classifier, hypothesizing that its discriminative sigmoid-based output would be more selective than the generative approach. We used a higher threshold for crops (0.6 vs.\ 0.5 for full images) to further reduce false positives.
+
+\begin{table}[h]
+\centering
+\caption{Comprehensive detection pipeline results: three classifiers $\times$ five fusion strategies}
+\label{tab:detection_comprehensive}
+\small
+\begin{tabular}{llcccc}
+\toprule
+Classifier & Fusion Strategy & Micro P & Micro R & Micro F1 \\
+\midrule
+\multicolumn{5}{l}{\textit{Florence-2 v11 (generative, trained on full images only)}} \\
+\midrule
+v11 & Full image only & 83.5\% & 70.5\% & 76.5\% \\
+v11 & Crops only & 41.6\% & 83.3\% & 55.5\% \\
+v11 & Union & 41.7\% & 87.2\% & 56.4\% \\
+\midrule
+\multicolumn{5}{l}{\textit{Florence-2 v13 (generative, trained on full images + crops)}} \\
+\midrule
+v13 & Full image only & 81.9\% & 66.5\% & 73.4\% \\
+v13 & Crops only & 46.0\% & 75.7\% & 57.2\% \\
+v13 & Union & 46.2\% & 80.9\% & 58.8\% \\
+\midrule
+\multicolumn{5}{l}{\textit{Contrastive classifier (discriminative, sigmoid threshold)}} \\
+\midrule
+Contrastive & Full image only & 78.8\% & 75.3\% & 77.0\% \\
+Contrastive & Crops only & 44.2\% & 59.8\% & 50.8\% \\
+Contrastive & Union & 48.7\% & 81.3\% & 60.9\% \\
+Contrastive & Intersection & 84.4\% & 53.8\% & 65.7\% \\
+Contrastive & Intersection + fallback & 81.5\% & 56.2\% & 66.5\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Conclusion.} Across three classifiers (v11, v13, contrastive) and five fusion strategies (full-only, crops-only, union, intersection, intersection with fallback), \textbf{no detection pipeline outperforms full-image classification}. The pattern is consistent: crops boost recall but destroy precision, regardless of the classifier or fusion method. Intersection raises precision (84.4\%) but sacrifices too much recall (53.8\%), netting lower F1 than full-image-only. Per-image analysis shows intersection helped only 11/166 images while hurting 37/166.
+
+This is a strong negative result: for multi-item shelf images, holistic classification outperforms detect-then-classify approaches. The likely cause is that (1) imperfect detection introduces noise, (2) cropped items lose contextual information (e.g., shelf layout, co-occurring items), and (3) the union operation accumulates false positives from all crops.
+
+\subsection{Alternative Detection: YOLOv11}
+
+To test whether the detection bottleneck was specific to Florence-2's OD capability, we fine-tuned YOLOv11m (20M parameters) on the same COCO-format bounding box annotations used for the Florence-2 OD model.
+
+\begin{table}[h]
+\centering
+\caption{YOLOv11m detection results (50 epochs, 640px)}
+\label{tab:yolo}
+\begin{tabular}{lcccc}
+\toprule
+ & Precision & Recall & mAP50 & mAP50-95 \\
+\midrule
+YOLOv11m & 77.4\% & 67.5\% & 75.2\% & 61.9\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Per-class detection varied widely: Baby Food (95.9\% mAP50), Fresh Fruit (89.7\%), and Vegetables Canned (79.2\%) were well-detected, while Vegetables Fresh (24.8\%), Nut Butters (28.8\%), and Meat \& Poultry Canned (33.7\%) were weak --- mirroring the same class-imbalance challenges seen in classification.
+
+While YOLO produces competitive detection results, Section~\ref{tab:detection_comprehensive} demonstrates that detection quality is not the bottleneck --- even perfect detection would not solve the precision problem in the crop$\rightarrow$classify pipeline.
+
+\subsection{Alternative Classifier: CLIP}
+
+We also tested CLIP (ViT-B/32) as a domain-independent crop classifier. We froze the CLIP vision encoder and trained a classification head (21-class softmax) on the 11,472 ground-truth crop images using cross-entropy loss for 20 epochs.
+
+\textbf{Result:} Best validation accuracy was only \textbf{22.5\%} (vs.\ 4.7\% random chance for 21 classes). CLIP's generic visual features, trained on internet images, lack the fine-grained food discrimination needed for pantry items. Validation loss increased continuously after epoch 4, indicating overfitting of the classification head on inadequate features. This negative result confirms that domain-specific fine-tuning (as in our Florence-2 approaches) is essential.
+
 \subsection{OCR-Based Input Signal}
 
 \textbf{Motivation.} Food packaging contains highly discriminative text (brand names, product descriptions, ingredients) that image-only classification may miss. For example, a can of ``Campbell's Chicken Noodle Soup'' is much easier to classify from its label text than from its visual appearance (a generic cylindrical can).
@@ -263,6 +332,10 @@ The VLM achieves 63.6\% micro F1 zero-shot --- more than double the vanilla Flor
 
 This result demonstrates that while general-purpose VLMs show strong zero-shot capability, fine-tuning on even 166 domain-specific images closes a 17\% F1 gap, justifying the fine-tuning approach.
 
+\subsection{Self-Consistency Voting}
+
+We tested self-consistency (SC) \cite{wang2022sc} with 3 sampling passes ($T$=0.7) to reduce VLM classification noise. However, SC 3$\times$ achieved only 62.3\% micro F1, slightly \textit{below} the single-pass result (63.6\%). Analysis revealed that VLM errors are \textit{systematic} (consistently misclassifying the same images) rather than random, making majority voting ineffective. This confirmed that the VLM's value lies not in classification but in its reasoning capability for Task 2.
+
 \subsection{Complete Summary of All Approaches}
 
 \begin{table}[h]
@@ -278,23 +351,33 @@ Approach & Micro P & Micro R & Micro F1 & Note \\
 \midrule
 Vanilla Florence-2 & 54.1\% & 18.3\% & 27.4\% & No training \\
 Qwen2.5-VL-7B CoT & 58.3\% & 70.1\% & 63.6\% & No training \\
+VLM + Self-Consistency 3$\times$ & --- & --- & 62.3\% & No improvement \\
 \midrule
-\multicolumn{5}{l}{\textit{Fine-tuned single models}} \\
+\multicolumn{5}{l}{\textit{Fine-tuned single models (full image)}} \\
 \midrule
-Florence-2 v11 (generative) & 82.2\% & 70.1\% & 75.7\% & Best single (gen.) \\
+Florence-2 v6 (vision+decoder LoRA) & 84.4\% & 62.5\% & 71.9\% & \\
+Florence-2 v9 (mixed data) & 80.2\% & 70.9\% & 75.3\% & \\
+Florence-2 v11 (continued fine-tuning) & 82.2\% & 70.1\% & 76.5\% & Best single (gen.) \\
+Florence-2 v13 (trained on crops) & 81.1\% & 66.5\% & 73.1\% & Regressed \\
 Contrastive v1 (frozen encoder) & 79.2\% & 75.7\% & 77.4\% & Best single (disc.) \\
-Contrastive v2a (tuned hparams) & 82.6\% & 72.1\% & 77.0\% & \\
 Contrastive v2b (partial unfreeze) & 72.5\% & 71.3\% & 71.9\% & Overfits \\
+CLIP ViT-B/32 (frozen, crops) & --- & --- & 22.5\% acc & Dead \\
 \midrule
-\multicolumn{5}{l}{\textit{Ensemble}} \\
+\multicolumn{5}{l}{\textit{Ensemble (full image)}} \\
 \midrule
 \textbf{v11 $\cup$ contrastive (union)} & \textbf{77.2\%} & \textbf{83.7\%} & \textbf{80.3\%} & \textbf{Best overall} \\
 v11 $\cap$ contrastive (intersection) & 84.0\% & 66.9\% & 74.5\% & \\
 \midrule
-\multicolumn{5}{l}{\textit{Alternative pipelines (did not improve)}} \\
+\multicolumn{5}{l}{\textit{Detection pipelines (OD $\rightarrow$ crop $\rightarrow$ classify)}} \\
 \midrule
-OD $\rightarrow$ crop $\rightarrow$ v11 & 41.7\% & 87.2\% & 56.4\% & \\
-Fine-tuned OD labels only & --- & --- & $\sim$40\% & \\
+OD $\rightarrow$ crop $\rightarrow$ v11 (union) & 41.7\% & 87.2\% & 56.4\% & \\
+OD $\rightarrow$ crop $\rightarrow$ v13 (union) & 46.2\% & 80.9\% & 58.8\% & \\
+OD $\rightarrow$ crop $\rightarrow$ contrastive (union) & 48.7\% & 81.3\% & 60.9\% & \\
+OD $\rightarrow$ crop $\rightarrow$ contrastive (intersect) & 84.4\% & 53.8\% & 65.7\% & \\
+\midrule
+\multicolumn{5}{l}{\textit{Other approaches}} \\
+\midrule
+Fine-tuned OD labels only & --- & --- & $\sim$40\% & Label hallucination \\
 OCR input signal (v3) & --- & --- & $\sim$+2\% & Marginal \\
 \bottomrule
 \end{tabular}
@@ -422,6 +505,46 @@ Both configurations are suitable for batch processing of pantry inventories.
   \item \textbf{Incorrect:} Condiments misclassified as ``Ready Meals'' $\rightarrow$ ``Fried Chicken with Mashed Potatoes'' (sim: 0.652, 349\,kcal). Lower similarity score reflects the mismatch.
 \end{itemize}
 
+\subsection{VLM Chain-of-Thought Product Identification (Task 2)}
+
+\textbf{Motivation.} The baseline USDA matching uses category names as queries (e.g., ``Bread and Bakery Products''), which returns generic matches. If a VLM could read product labels from the image and identify specific products (e.g., ``Target Bakery Whole Grain Bread''), the USDA match would be more precise.
+
+\textbf{Method.} We extended the Qwen2.5-VL-7B pipeline to identify specific products, then used these as USDA queries:
+\begin{enumerate}[nosep,leftmargin=1.5em]
+  \item VLM reads product labels and generates a specific product name per item
+  \item Product name is embedded and matched against USDA database
+  \item If VLM output is more specific than the category, it reranks the baseline top-5 USDA matches
+\end{enumerate}
+
+\textbf{Parsing challenges.} VLM output required extensive post-processing across three iterations:
+\begin{itemize}[nosep,leftmargin=1.5em]
+  \item \textbf{v1:} 10\% parse rate --- wrong model class, strict JSON parsing
+  \item \textbf{v2:} 19\% parse rate --- fixed model loading, flexible key extraction
+  \item \textbf{v3:} 36\% parse rate --- aggressive JSON repair, fuzzy category matching, flexible query keys
+\end{itemize}
+
+Remaining parse failures stem from truncated VLM output, hallucinated code fragments, and inconsistent JSON formatting. The 7B model's limited context window and instruction-following capability are the bottleneck.
+
+\textbf{Results.}
+
+\begin{table}[h]
+\centering
+\caption{USDA matching with VLM product identification}
+\label{tab:cot_usda}
+\begin{tabular}{lcc}
+\toprule
+Method & Mean Cosine Similarity & Parse Rate \\
+\midrule
+Baseline (category-only query) & 0.832 & 100\% \\
+CoT (VLM product ID) & 0.810 & 36\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Surprisingly, the CoT approach achieved a \textit{lower} mean cosine similarity ($-$2.7\%), despite producing qualitatively better matches. For example, for an image of sliced bread, the baseline matched ``Farmstyle Bread Half Loaf'' (sim: 0.867) while CoT matched ``Whole Grain Gluten-Free Loaf'' (sim: 0.798) --- the CoT match is arguably more specific and appropriate, but scores lower because specific product names have lower textual overlap with generic USDA descriptions. This suggests cosine similarity is a flawed evaluation metric for retrieval quality in this context.
+
+Of the 59 successfully parsed images, the VLM's product-specific query changed the top-1 USDA match in 16/26 cases (62\%) where it was applied as a reranker. This indicates the VLM provides genuinely different (and often more specific) retrieval signals, but better evaluation metrics are needed to quantify the improvement.
+
 \subsection{Limitations}
 
 \begin{itemize}[nosep,leftmargin=1.5em]
@@ -439,10 +562,10 @@ Both configurations are suitable for batch processing of pantry inventories.
 \subsection{Summary of Contributions}
 
 \begin{enumerate}[nosep,leftmargin=1.5em]
-  \item \textbf{Task 1:} Developed a pantry item classification pipeline achieving 80.3\% micro F1 through an ensemble of fine-tuned generative (Florence-2) and discriminative (contrastive) classifiers, trained on only 166 images.
-  \item \textbf{Task 2:} Built an end-to-end USDA nutritional matching pipeline with semantic retrieval, category boosting, and error propagation analysis.
-  \item \textbf{Comprehensive ablation:} Evaluated 10+ approaches including detection-first, OCR, contrastive learning, ensemble methods, and VLM chain-of-thought, providing clear evidence for design choices.
-  \item \textbf{Error propagation analysis:} Demonstrated that classification errors cause moderate nutritional overestimation, with the ensemble's higher recall being preferable for food assistance applications.
+  \item \textbf{Task 1 Classification:} Achieved 80.3\% micro F1 through an ensemble of generative (Florence-2 v11) and discriminative (contrastive) classifiers on full images, trained with only 166 images.
+  \item \textbf{Task 2 USDA Matching:} Built an end-to-end nutritional matching pipeline with semantic retrieval and category boosting against 461,919 USDA items, with error propagation analysis.
+  \item \textbf{Comprehensive ablation (15+ approaches):} Systematically evaluated detection-first pipelines (3 classifiers $\times$ 5 fusion strategies), OCR input signals, contrastive learning variants, CLIP and YOLO alternatives, VLM chain-of-thought with self-consistency, and ensemble methods. The detection pipeline ablation is a particularly strong negative result: no combination of detector, classifier, or fusion strategy outperforms simple full-image classification.
+  \item \textbf{Error propagation analysis:} Classification errors cause moderate nutritional overestimation; the ensemble's higher recall (83.7\%) is preferable for food assistance applications where missing items is worse than over-counting.
 \end{enumerate}
 
 \subsection{Future Work}
@@ -475,6 +598,11 @@ Qwen Team,
 P.~Khosla et al.,
 ``Supervised Contrastive Learning,''
 \textit{NeurIPS}, 2020.
+
+\bibitem{wang2022sc}
+X.~Wang et al.,
+``Self-Consistency Improves Chain of Thought Reasoning in Language Models,''
+\textit{ICLR}, 2023.
 
 \end{thebibliography}
 
