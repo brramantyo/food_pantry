@@ -208,7 +208,7 @@ def train_clip_classifier(
     # Load CLIP model
     logger.info(f"Loading CLIP model from {model_name}")
     image_processor = CLIPImageProcessor.from_pretrained(model_name)
-    vision_model = CLIPVisionModel.from_pretrained(model_name)
+    vision_model = CLIPVisionModel.from_pretrained(model_name, use_safetensors=True)
     vision_model = vision_model.to(device)
 
     # Create classification head
