@@ -4,19 +4,27 @@ Fine-tune OpenAI CLIP for single-label classification of food pantry crops.
 
 Trains classification head on top of frozen CLIP vision encoder.
 Single-label classification: each crop = exactly 1 category.
+
+v2 Improvements:
+- Class-balanced sampling (WeightedRandomSampler)
+- Focal loss for hard/rare examples
+- Per-class accuracy logging
+- Better augmentation
 """
 
 import argparse
 import json
 import logging
+from collections import Counter
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from PIL import Image
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 from torchvision import transforms
 from tqdm import tqdm
 from transformers import CLIPImageProcessor, CLIPVisionModel
@@ -109,6 +117,34 @@ class CropDataset(Dataset):
         return pixel_values, label
 
 
+class FocalLoss(nn.Module):
+    """
+    Focal Loss for handling class imbalance.
+    
+    FL(p_t) = -alpha_t * (1 - p_t)^gamma * log(p_t)
+    
+    gamma=0 → standard cross-entropy
+    gamma=2 → strong focus on hard examples (recommended)
+    """
+    
+    def __init__(self, alpha=None, gamma=2.0, reduction='mean'):
+        super().__init__()
+        self.gamma = gamma
+        self.alpha = alpha  # per-class weights
+        self.reduction = reduction
+    
+    def forward(self, inputs, targets):
+        ce_loss = F.cross_entropy(inputs, targets, weight=self.alpha, reduction='none')
+        p_t = torch.exp(-ce_loss)
+        focal_loss = ((1 - p_t) ** self.gamma) * ce_loss
+        
+        if self.reduction == 'mean':
+            return focal_loss.mean()
+        elif self.reduction == 'sum':
+            return focal_loss.sum()
+        return focal_loss
+
+
 class CLIPClassificationHead(nn.Module):
     """Classification head on top of CLIP vision encoder."""
 
@@ -197,8 +233,11 @@ def train_clip_classifier(
     lr: float = 1e-4,
     freeze_encoder: bool = True,
     bf16: bool = False,
+    use_focal_loss: bool = True,
+    focal_gamma: float = 2.0,
+    use_balanced_sampling: bool = True,
 ) -> None:
-    """Main training pipeline."""
+    """Main training pipeline with class balancing and focal loss."""
     device = "cuda" if torch.cuda.is_available() else "cpu"
     logger.info(f"Using device: {device}")
 
@@ -220,14 +259,62 @@ def train_clip_classifier(
     # Create datasets
     logger.info("Loading training dataset...")
     train_dataset = CropDataset(train_jsonl, crop_dir, image_processor, augment=True)
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4)
+    
+    # Class-balanced sampling
+    if use_balanced_sampling:
+        logger.info("Computing class-balanced sampling weights...")
+        labels = []
+        for i in range(len(train_dataset)):
+            sample = train_dataset.samples[i]
+            target_text = sample.get("target", "{}")
+            try:
+                target_obj = json.loads(target_text)
+                items = target_obj.get("items", [])
+                if items:
+                    category_name = items[0]["name"]
+                    label = CATEGORIES.index(category_name)
+                else:
+                    label = 0
+            except:
+                label = 0
+            labels.append(label)
+        
+        class_counts = Counter(labels)
+        total = len(labels)
+        # Inverse frequency weighting
+        class_weights = {cls: total / count for cls, count in class_counts.items()}
+        sample_weights = [class_weights[label] for label in labels]
+        sampler = WeightedRandomSampler(sample_weights, num_samples=len(sample_weights), replacement=True)
+        
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, sampler=sampler, num_workers=4)
+        
+        logger.info("Class distribution:")
+        for cls_id, count in sorted(class_counts.items()):
+            cat_name = CATEGORIES[cls_id] if cls_id < len(CATEGORIES) else f"Unknown({cls_id})"
+            logger.info(f"  {cat_name}: {count} samples (weight: {class_weights[cls_id]:.2f})")
+    else:
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4)
 
     logger.info("Loading validation dataset...")
     val_dataset = CropDataset(val_jsonl, crop_dir, image_processor, augment=False)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4)
 
-    # Optimizer and loss
-    criterion = nn.CrossEntropyLoss()
+    # Loss function
+    if use_focal_loss:
+        logger.info(f"Using Focal Loss (gamma={focal_gamma})")
+        # Compute class weights for focal loss alpha
+        if use_balanced_sampling and class_counts:
+            alpha = torch.zeros(21)
+            for cls_id, count in class_counts.items():
+                alpha[cls_id] = total / (21 * count)
+            alpha = alpha.to(device)
+            criterion = FocalLoss(alpha=alpha, gamma=focal_gamma)
+        else:
+            criterion = FocalLoss(gamma=focal_gamma)
+    else:
+        criterion = nn.CrossEntropyLoss()
+
+    # Optimizer
     optimizer = torch.optim.AdamW(model.classifier.parameters(), lr=lr)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
@@ -248,10 +335,42 @@ def train_clip_classifier(
         if val_accuracy > best_accuracy:
             best_accuracy = val_accuracy
             torch.save(model.state_dict(), best_model_path)
-            logger.info(f"Saved best model at epoch {epoch + 1} with accuracy {val_accuracy:.4f}")
+            logger.info(f"★ New best model at epoch {epoch + 1}: {val_accuracy:.4f}")
+
+    # Final per-class evaluation
+    logger.info("\n" + "=" * 60)
+    logger.info("Final Per-Class Evaluation:")
+    logger.info("=" * 60)
+    per_class_eval(model, val_loader, device)
 
     logger.info(f"\nTraining complete. Best accuracy: {best_accuracy:.4f}")
     logger.info(f"Best model saved to {best_model_path}")
+
+
+def per_class_eval(model, dataloader, device):
+    """Evaluate per-class accuracy."""
+    model.eval()
+    class_correct = Counter()
+    class_total = Counter()
+    
+    with torch.no_grad():
+        for pixel_values, labels in dataloader:
+            pixel_values = pixel_values.to(device)
+            labels = labels.to(device)
+            logits = model(pixel_values)
+            preds = logits.argmax(dim=1)
+            
+            for pred, label in zip(preds, labels):
+                class_total[label.item()] += 1
+                if pred == label:
+                    class_correct[label.item()] += 1
+    
+    for cls_id in sorted(class_total.keys()):
+        cat_name = CATEGORIES[cls_id] if cls_id < len(CATEGORIES) else f"Unknown({cls_id})"
+        correct = class_correct[cls_id]
+        total = class_total[cls_id]
+        acc = correct / total if total > 0 else 0
+        logger.info(f"  {cat_name}: {acc:.1%} ({correct}/{total})")
 
 
 if __name__ == "__main__":
@@ -270,6 +389,9 @@ if __name__ == "__main__":
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
     parser.add_argument("--freeze-encoder", action="store_true", default=True, help="Freeze CLIP encoder")
     parser.add_argument("--bf16", action="store_true", help="Use bfloat16")
+    parser.add_argument("--focal-loss", action="store_true", default=True, help="Use focal loss")
+    parser.add_argument("--focal-gamma", type=float, default=2.0, help="Focal loss gamma (higher = more focus on hard examples)")
+    parser.add_argument("--balanced-sampling", action="store_true", default=True, help="Use class-balanced sampling")
 
     args = parser.parse_args()
 
@@ -284,4 +406,7 @@ if __name__ == "__main__":
         lr=args.lr,
         freeze_encoder=args.freeze_encoder,
         bf16=args.bf16,
+        use_focal_loss=args.focal_loss,
+        focal_gamma=args.focal_gamma,
+        use_balanced_sampling=args.balanced_sampling,
     )
