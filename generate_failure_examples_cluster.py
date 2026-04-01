@@ -144,7 +144,12 @@ def run_inference(checkpoint_path: str, base_model: str, test_data: List[Dict],
         image = Image.open(img_path).convert("RGB")
         
         prompt = "<DETAILED_CAPTION>"
-        inputs = processor(text=prompt, images=image, return_tensors="pt").to(device)
+        inputs = processor(text=prompt, images=image, return_tensors="pt")
+        
+        # Move to device and cast to bfloat16 to match model
+        inputs = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in inputs.items()}
+        if "pixel_values" in inputs:
+            inputs["pixel_values"] = inputs["pixel_values"].to(torch.bfloat16)
         
         with torch.no_grad():
             generated_ids = model.generate(
