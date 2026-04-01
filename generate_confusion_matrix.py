@@ -147,7 +147,8 @@ def print_confusion_matrix(cm):
     print(f"{'='*80}")
     
     # Header
-    header = f"  {'True \\ Pred':<12}"
+    label = 'True \\ Pred'
+    header = f"  {label:<12}"
     for sn in SHORT_NAMES:
         header += f"{sn:>7}"
     header += f"{'Total':>7}"
