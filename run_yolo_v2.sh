@@ -21,7 +21,7 @@ python train_yolo_detector.py \
     --data-dir . \
     --output-dir runs/detect_v2/ \
     --epochs 100 \
-    --batch-size 8 \
+    --batch-size 4 \
     --imgsz 640 \
     --model yolo11x.pt \
     --patience 15 \
