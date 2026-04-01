@@ -422,7 +422,7 @@ def main():
         transforms.RandomResizedCrop(args.img_size, scale=(0.7, 1.0)),
         transforms.RandomHorizontalFlip(),
         transforms.RandomVerticalFlip(p=0.1),
-        transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.02),
+        transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3),
         transforms.RandomAffine(degrees=15, translate=(0.1, 0.1), scale=(0.9, 1.1)),
         transforms.RandomGrayscale(p=0.05),
         transforms.ToTensor(),
