@@ -148,16 +148,39 @@ class FocalLoss(nn.Module):
 class CLIPClassificationHead(nn.Module):
     """Classification head on top of CLIP vision encoder."""
 
-    def __init__(self, vision_model, feature_dim: int = 768, num_classes: int = 21, freeze_encoder: bool = True):
+    def __init__(self, vision_model, feature_dim: int = 768, num_classes: int = 21, 
+                 freeze_encoder: bool = False, unfreeze_layers: int = -1):
         super().__init__()
         self.vision_model = vision_model
-        if freeze_encoder:
+        
+        if freeze_encoder or unfreeze_layers == 0:
+            # Freeze everything
             for param in self.vision_model.parameters():
                 param.requires_grad = False
+            logger.info("Encoder: fully frozen (linear probe)")
+        elif unfreeze_layers > 0:
+            # Freeze all, then unfreeze last N layers
+            for param in self.vision_model.parameters():
+                param.requires_grad = False
+            # Unfreeze last N transformer layers
+            encoder_layers = self.vision_model.vision_model.encoder.layers
+            total_layers = len(encoder_layers)
+            for layer in encoder_layers[total_layers - unfreeze_layers:]:
+                for param in layer.parameters():
+                    param.requires_grad = True
+            # Always unfreeze post_layernorm
+            for param in self.vision_model.vision_model.post_layernorm.parameters():
+                param.requires_grad = True
+            logger.info(f"Encoder: unfreezing last {unfreeze_layers}/{total_layers} layers")
+        else:
+            # Unfreeze everything (full fine-tune)
+            logger.info("Encoder: fully unfrozen (full fine-tune)")
+        
         self.feature_dim = feature_dim
         self.classifier = nn.Sequential(
+            nn.LayerNorm(feature_dim),
             nn.Linear(feature_dim, feature_dim // 2),
-            nn.ReLU(inplace=True),
+            nn.GELU(),
             nn.Dropout(0.3),
             nn.Linear(feature_dim // 2, num_classes),
         )
@@ -231,7 +254,8 @@ def train_clip_classifier(
     epochs: int = 10,
     batch_size: int = 32,
     lr: float = 1e-4,
-    freeze_encoder: bool = True,
+    freeze_encoder: bool = False,
+    unfreeze_layers: int = -1,
     bf16: bool = False,
     use_focal_loss: bool = True,
     focal_gamma: float = 2.0,
@@ -252,7 +276,8 @@ def train_clip_classifier(
 
     # Create classification head
     model = CLIPClassificationHead(
-        vision_model, feature_dim=vision_model.config.hidden_size, num_classes=21, freeze_encoder=freeze_encoder
+        vision_model, feature_dim=vision_model.config.hidden_size, num_classes=21, 
+        freeze_encoder=freeze_encoder, unfreeze_layers=unfreeze_layers
     )
     model = model.to(device)
 
@@ -314,8 +339,22 @@ def train_clip_classifier(
     else:
         criterion = nn.CrossEntropyLoss()
 
-    # Optimizer
-    optimizer = torch.optim.AdamW(model.classifier.parameters(), lr=lr)
+    # Optimizer with differential learning rates
+    if freeze_encoder:
+        # Only train classifier head
+        optimizer = torch.optim.AdamW(model.classifier.parameters(), lr=lr)
+    else:
+        # Differential LR: lower for encoder, higher for classifier
+        encoder_params = [p for p in model.vision_model.parameters() if p.requires_grad]
+        classifier_params = list(model.classifier.parameters())
+        
+        param_groups = [
+            {"params": encoder_params, "lr": lr * 0.1},   # 10x lower for encoder
+            {"params": classifier_params, "lr": lr},        # full LR for head
+        ]
+        optimizer = torch.optim.AdamW(param_groups, weight_decay=0.01)
+        logger.info(f"Optimizer: encoder LR={lr*0.1:.6f}, head LR={lr:.6f}")
+    
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
     # Training loop
@@ -387,11 +426,13 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type=int, default=10, help="Number of epochs")
     parser.add_argument("--batch-size", type=int, default=32, help="Batch size")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
-    parser.add_argument("--freeze-encoder", action="store_true", default=True, help="Freeze CLIP encoder")
+    parser.add_argument("--freeze-encoder", action="store_true", default=False, help="Freeze CLIP encoder (default: fine-tune all)")
+    parser.add_argument("--unfreeze-layers", type=int, default=-1, help="Number of encoder layers to unfreeze (-1 = all, 0 = none/frozen)")
     parser.add_argument("--bf16", action="store_true", help="Use bfloat16")
     parser.add_argument("--focal-loss", action="store_true", default=True, help="Use focal loss")
     parser.add_argument("--focal-gamma", type=float, default=2.0, help="Focal loss gamma (higher = more focus on hard examples)")
     parser.add_argument("--balanced-sampling", action="store_true", default=True, help="Use class-balanced sampling")
+    parser.add_argument("--method", type=str, default="finetune", choices=["finetune", "linear", "simclr"], help="Training method")
 
     args = parser.parse_args()
 
@@ -405,6 +446,7 @@ if __name__ == "__main__":
         batch_size=args.batch_size,
         lr=args.lr,
         freeze_encoder=args.freeze_encoder,
+        unfreeze_layers=args.unfreeze_layers,
         bf16=args.bf16,
         use_focal_loss=args.focal_loss,
         focal_gamma=args.focal_gamma,
