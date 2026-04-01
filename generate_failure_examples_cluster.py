@@ -100,8 +100,34 @@ def run_inference(checkpoint_path: str, base_model: str, test_data: List[Dict],
         base_model,
         torch_dtype=torch.bfloat16,
         trust_remote_code=True
-    ).to(device)
+    )
     
+    # Resize embeddings to match checkpoint (if needed)
+    # This handles cases where vocab was extended during training
+    try:
+        import json
+        adapter_config_path = os.path.join(checkpoint_path, "adapter_config.json")
+        if os.path.exists(adapter_config_path):
+            with open(adapter_config_path, 'r') as f:
+                adapter_config = json.load(f)
+            # Check if we need to resize
+            # Load one weight to check actual size
+            import safetensors
+            weights_path = os.path.join(checkpoint_path, "adapter_model.safetensors")
+            if os.path.exists(weights_path):
+                from safetensors.torch import load_file
+                weights = load_file(weights_path)
+                # Check shared.weight size
+                if "base_model.model.language_model.model.shared.weight" in weights:
+                    checkpoint_vocab_size = weights["base_model.model.language_model.model.shared.weight"].shape[0]
+                    current_vocab_size = base.language_model.model.shared.weight.shape[0]
+                    if checkpoint_vocab_size != current_vocab_size:
+                        print(f"  Resizing embeddings: {current_vocab_size} → {checkpoint_vocab_size}")
+                        base.language_model.resize_token_embeddings(checkpoint_vocab_size)
+    except Exception as e:
+        print(f"  Warning: Could not check/resize embeddings: {e}")
+    
+    base = base.to(device)
     model = PeftModel.from_pretrained(base, checkpoint_path)
     model.eval()
     
