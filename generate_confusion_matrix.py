@@ -77,11 +77,9 @@ def build_confusion_matrix(results, pred_key="ensemble_preds"):
             preds = set(r[pred_key])
         elif "ensemble" in r:
             preds = set(r["ensemble"])
-        elif "v11_preds" in r:
+        elif "v11_preds" in r and "contrastive_preds" in r:
             # Reconstruct ensemble from v11 + contrastive
-            v11 = set(r.get("v11_preds", []))
-            con = set(r.get("contrastive_preds", []))
-            preds = v11 | con
+            preds = set(r.get("v11_preds", [])) | set(r.get("contrastive_preds", []))
         else:
             continue
         
@@ -285,7 +283,7 @@ def main():
     with open(args.json) as f:
         data = json.load(f)
     
-    results = data.get("results", data.get("samples", []))
+    results = data.get("per_image_results", data.get("results", data.get("samples", [])))
     print(f"Loaded {len(results)} results from {args.json}")
     
     # Detect available prediction keys
@@ -293,11 +291,26 @@ def main():
         sample = results[0]
         print(f"Available keys: {list(sample.keys())}")
     
+    # Normalize key names: map various formats to standard {target, preds} 
+    for r in results:
+        # Target
+        if "target_categories" in r and "target" not in r:
+            r["target"] = r["target_categories"]
+        # Ensemble
+        if "ensemble_predictions" in r and "ensemble" not in r:
+            r["ensemble"] = r["ensemble_predictions"]
+        # v11
+        if "v11_predictions" in r and "v11_preds" not in r:
+            r["v11_preds"] = r["v11_predictions"]
+        # Contrastive
+        if "contrastive_predictions" in r and "contrastive_preds" not in r:
+            r["contrastive_preds"] = r["contrastive_predictions"]
+    
     # Try different prediction key patterns
     methods = {}
     if results:
         sample = results[0]
-        if "ensemble" in sample or "v11_preds" in sample:
+        if "ensemble" in sample:
             methods["ensemble"] = "ensemble"
         if "v11_preds" in sample:
             methods["v11"] = "v11_preds"
@@ -305,9 +318,8 @@ def main():
             methods["contrastive"] = "contrastive_preds"
     
     if not methods:
-        # Fallback: try to find any prediction key
-        print("WARNING: Could not detect prediction keys. Trying generic approach...")
-        methods["predictions"] = "predictions"
+        print("WARNING: Could not detect prediction keys.")
+        return
     
     for method_name, pred_key in methods.items():
         print(f"\n{'#'*80}")
