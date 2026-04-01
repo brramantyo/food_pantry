@@ -104,7 +104,8 @@ def create_yolo_dataset(data_dir, output_dir="yolo_dataset"):
                     yolo_class = cat_id_to_yolo[cat_id]
                     
                     # Convert COCO bbox (x, y, w, h) to YOLO (x_center, y_center, w, h) normalized
-                    x, y, w, h = ann["bbox"]
+                    # Cast to float (COCO sometimes stores as strings)
+                    x, y, w, h = [float(v) for v in ann["bbox"]]
                     x_center = (x + w / 2) / img_width
                     y_center = (y + h / 2) / img_height
                     w_norm = w / img_width
