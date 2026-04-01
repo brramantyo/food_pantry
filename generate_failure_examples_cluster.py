@@ -102,10 +102,11 @@ def load_test_data(jsonl_path: str) -> List[Dict]:
     return data
 
 
-def load_predictions(pred_path: str) -> Dict:
-    """Load evaluation results with predictions."""
+def load_predictions(pred_path: str) -> List[Dict]:
+    """Load evaluation results with predictions (list of dicts)."""
     with open(pred_path, 'r') as f:
-        return json.load(f)
+        data = json.load(f)
+        return data.get('predictions', [])
 
 
 def run_inference(checkpoint_path: str, base_model: str, test_data: List[Dict], 
@@ -214,7 +215,10 @@ def categorize_failures(test_data: List[Dict], predictions: List[str]) -> Dict[s
         if i >= len(predictions):
             continue
         
-        pred_text = predictions[i]
+        # predictions[i] is a dict: {'image': ..., 'target': ..., 'prediction': ...}
+        pred_sample = predictions[i]
+        pred_text = pred_sample.get("prediction", pred_sample.get("target", ""))
+        
         pred_counts = parse_florence_output(pred_text)
         
         # Debug: print first 3 samples
