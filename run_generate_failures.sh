@@ -18,7 +18,7 @@ mkdir -p figures/failure_examples
 
 python3 generate_failure_examples_cluster.py \
     --checkpoint checkpoints/best_model \
-    --base-model microsoft/Florence-2-large-ft \
+    --base-model microsoft/Florence-2-base-ft \
     --test-jsonl florence2_data/test.jsonl \
     --data-dir . \
     --output-dir figures/failure_examples \
