@@ -132,8 +132,12 @@ def train_yolo(
     batch_size: int = 16,
     imgsz: int = 640,
     model_name: str = "yolo11m.pt",
+    patience: int = 15,
+    mixup: float = 0.15,
+    cutmix: float = 0.15,
+    multi_scale: float = 0.0,
 ) -> None:
-    """Fine-tune YOLOv11."""
+    """Fine-tune YOLOv11 with advanced augmentation."""
     logger.info(f"Loading {model_name}...")
     model = YOLO(model_name)
 
@@ -148,7 +152,31 @@ def train_yolo(
         name="yolo_detector",
         exist_ok=True,
         save=True,
-        patience=5,
+        patience=patience,
+        
+        # Augmentation (boost for rare classes)
+        mixup=mixup,
+        cutmix=cutmix,
+        mosaic=1.0,
+        degrees=10.0,
+        translate=0.1,
+        scale=0.5,
+        flipud=0.1,
+        erasing=0.3,
+        
+        # Optimization
+        optimizer="AdamW",
+        lr0=0.001,
+        lrf=0.01,
+        weight_decay=0.0005,
+        warmup_epochs=5.0,
+        cos_lr=True,
+        
+        # Multi-scale training
+        multi_scale=multi_scale,
+        
+        # Close mosaic for last 15 epochs (fine-tune on clean images)
+        close_mosaic=15,
     )
 
     logger.info(f"Training complete. Results: {results}")
@@ -168,6 +196,10 @@ def main(
     batch_size: int = 16,
     imgsz: int = 640,
     model: str = "yolo11m.pt",
+    patience: int = 15,
+    mixup: float = 0.15,
+    cutmix: float = 0.15,
+    multi_scale: float = 0.0,
 ) -> None:
     """Main pipeline."""
     data_dir = Path(data_dir)
@@ -236,7 +268,8 @@ def main(
     )
 
     logger.info("Training YOLOv11...")
-    train_yolo(str(yaml_path), str(output_dir), epochs=epochs, batch_size=batch_size, imgsz=imgsz, model_name=model)
+    train_yolo(str(yaml_path), str(output_dir), epochs=epochs, batch_size=batch_size, imgsz=imgsz, 
+               model_name=model, patience=patience, mixup=mixup, cutmix=cutmix, multi_scale=multi_scale)
 
 
 if __name__ == "__main__":
@@ -247,6 +280,10 @@ if __name__ == "__main__":
     parser.add_argument("--batch-size", type=int, default=16, help="Batch size")
     parser.add_argument("--imgsz", type=int, default=640, help="Image size")
     parser.add_argument("--model", default="yolo11m.pt", help="YOLO model name")
+    parser.add_argument("--patience", type=int, default=15, help="Early stopping patience")
+    parser.add_argument("--mixup", type=float, default=0.15, help="MixUp alpha")
+    parser.add_argument("--cutmix", type=float, default=0.15, help="CutMix alpha")
+    parser.add_argument("--multi-scale", type=float, default=0.0, help="Multi-scale training factor")
 
     args = parser.parse_args()
 
@@ -257,4 +294,8 @@ if __name__ == "__main__":
         batch_size=args.batch_size,
         imgsz=args.imgsz,
         model=args.model,
+        patience=args.patience,
+        mixup=args.mixup,
+        cutmix=args.cutmix,
+        multi_scale=args.multi_scale,
     )
