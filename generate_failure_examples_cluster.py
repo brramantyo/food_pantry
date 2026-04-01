@@ -500,11 +500,18 @@ def main():
         print("\nLoading predictions...")
         pred_data = load_predictions(args.predictions)
         
-        # Extract per-sample predictions
-        if "per_sample_results" in pred_data:
-            predictions = [s.get("prediction", "") for s in pred_data["per_sample_results"]]
+        # Extract predictions list
+        if isinstance(pred_data, dict):
+            if "per_sample_results" in pred_data:
+                predictions = pred_data["per_sample_results"]
+            elif "predictions" in pred_data:
+                predictions = pred_data["predictions"]
+            else:
+                raise ValueError("Predictions file must contain 'per_sample_results' or 'predictions'")
+        elif isinstance(pred_data, list):
+            predictions = pred_data
         else:
-            raise ValueError("Predictions file must contain 'per_sample_results'")
+            raise ValueError("Predictions file must be dict or list")
         
         print(f"✓ Loaded {len(predictions)} predictions")
     
