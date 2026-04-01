@@ -58,18 +58,39 @@ except ImportError:
     HAS_TORCH = False
 
 
-def parse_florence_output(text: str) -> Dict[str, int]:
-    """Parse Florence-2 output into category counts."""
+def parse_florence_output(text) -> Dict[str, int]:
+    """Parse Florence-2 output into category counts.
+    
+    Handles multiple formats:
+    - Raw JSON string: '{"items": [...]}'
+    - Dict from post_process: {'<STRUCTURED_PANTRY_OUTPUT>': '{"items": [...]}'}
+    - Already parsed dict: {"items": [...]}
+    """
+    # If it's a dict from post_process, extract the text value
+    if isinstance(text, dict):
+        # post_process_generation returns {task_prompt: output_text}
+        for key, val in text.items():
+            text = val
+            break
+    
+    # If still not a string, try to use as-is
+    if not isinstance(text, str):
+        text = str(text)
+    
     try:
         data = json.loads(text)
-        counts = {}
-        for item in data.get("pantry_items", []):
-            cat = item.get("category", "")
-            if cat:
-                counts[cat] = counts.get(cat, 0) + 1
-        return counts
-    except:
+    except (json.JSONDecodeError, TypeError):
         return {}
+    
+    counts = {}
+    # Try both "items" and "pantry_items" keys
+    items = data.get("items", data.get("pantry_items", []))
+    for item in items:
+        cat = item.get("category", item.get("name", ""))
+        count = item.get("count", 1)
+        if cat:
+            counts[cat] = counts.get(cat, 0) + count
+    return counts
 
 
 def load_test_data(jsonl_path: str) -> List[Dict]:
@@ -182,8 +203,12 @@ def categorize_failures(test_data: List[Dict], predictions: List[str]) -> Dict[s
         "false_positive": []
     }
     
+    n_correct = 0
+    n_parse_fail_gt = 0
+    n_parse_fail_pred = 0
+    
     for i, sample in enumerate(test_data):
-        gt_text = sample.get("suffix", "")
+        gt_text = sample.get("target", sample.get("suffix", ""))
         gt_counts = parse_florence_output(gt_text)
         
         if i >= len(predictions):
@@ -192,8 +217,35 @@ def categorize_failures(test_data: List[Dict], predictions: List[str]) -> Dict[s
         pred_text = predictions[i]
         pred_counts = parse_florence_output(pred_text)
         
+        # Debug: print first 3 samples
+        if i < 3:
+            print(f"\n  [DEBUG] Sample {i}:")
+            print(f"    GT text (first 100): {str(gt_text)[:100]}")
+            print(f"    GT counts: {gt_counts}")
+            print(f"    Pred text (first 100): {str(pred_text)[:100]}")
+            print(f"    Pred counts: {pred_counts}")
+        
+        # Track parse failures
+        if not gt_counts:
+            n_parse_fail_gt += 1
+            continue
+        if not pred_counts:
+            n_parse_fail_pred += 1
+            # Treat empty prediction as multi-item omission
+            failure_info = {
+                "index": i,
+                "image": sample.get("image", ""),
+                "gt_counts": gt_counts,
+                "pred_counts": pred_counts,
+                "gt_text": gt_text,
+                "pred_text": pred_text
+            }
+            failures["multi_item_omission"].append(failure_info)
+            continue
+        
         # Skip correct predictions
         if gt_counts == pred_counts:
+            n_correct += 1
             continue
         
         failure_info = {
@@ -224,6 +276,15 @@ def categorize_failures(test_data: List[Dict], predictions: List[str]) -> Dict[s
         # False positive: predicted items not in GT
         elif len(pred_cats) > len(gt_cats):
             failures["false_positive"].append(failure_info)
+    
+    print(f"\n  [DEBUG] Summary:")
+    print(f"    Total samples: {len(test_data)}")
+    print(f"    Predictions: {len(predictions)}")
+    print(f"    Correct: {n_correct}")
+    print(f"    GT parse failures: {n_parse_fail_gt}")
+    print(f"    Pred parse failures: {n_parse_fail_pred}")
+    total_failures = sum(len(v) for v in failures.values())
+    print(f"    Total failures found: {total_failures}")
     
     return failures
 
