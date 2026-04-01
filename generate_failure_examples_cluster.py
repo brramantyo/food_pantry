@@ -143,7 +143,7 @@ def run_inference(checkpoint_path: str, base_model: str, test_data: List[Dict],
         img_path = os.path.join(data_dir, img_rel_path)
         image = Image.open(img_path).convert("RGB")
         
-        prompt = "<DETAILED_CAPTION>"
+        prompt = "<STRUCTURED_PANTRY_OUTPUT>"
         inputs = processor(text=prompt, images=image, return_tensors="pt")
         
         # Move to device and cast to bfloat16 to match model
