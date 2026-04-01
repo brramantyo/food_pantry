@@ -138,7 +138,9 @@ def run_inference(checkpoint_path: str, base_model: str, test_data: List[Dict],
         if (i + 1) % 50 == 0:
             print(f"  {i+1}/{len(test_data)}...")
         
-        img_path = os.path.join(data_dir, sample["image"])
+        # Normalize path separators (handle Windows backslashes)
+        img_rel_path = sample["image"].replace("\\", "/")
+        img_path = os.path.join(data_dir, img_rel_path)
         image = Image.open(img_path).convert("RGB")
         
         prompt = "<DETAILED_CAPTION>"
@@ -464,8 +466,8 @@ def main():
     descriptions = []
     
     for i, (failure_type, example) in enumerate(selected, 1):
-        # Build image path
-        img_rel_path = example["image"]
+        # Build image path (normalize Windows backslashes)
+        img_rel_path = example["image"].replace("\\", "/")
         img_path = os.path.join(args.data_dir, img_rel_path)
         
         if not os.path.exists(img_path):
