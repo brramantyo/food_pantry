@@ -177,6 +177,9 @@ def train_yolo(
         
         # Close mosaic for last 15 epochs (fine-tune on clean images)
         close_mosaic=15,
+        
+        # Workers (reduce to avoid shared memory issues)
+        workers=2,
     )
 
     logger.info(f"Training complete. Results: {results}")
