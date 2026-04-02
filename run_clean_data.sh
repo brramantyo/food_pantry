@@ -21,7 +21,7 @@ mkdir -p logs
 # ── Run cleaning ──────────────────────────────────────────────────────────
 # Config:
 #   - Remove blurry images (blur score < 50)
-#   - Drop tiny categories: Frozen Mix Veg (10), Oil (16), Spices (16), Carton of Eggs (35)
+#   - Drop tiny categories: Frozen Mix Veg (10), Oil (16), Spices (16), Carton of Eggs (35), Baby Food (11)
 #   - Merge: Meat Canned + Seafood Canned → Canned Protein
 #   - Merge: Vegetables Fresh + Fresh Fruit → Fresh Produce
 #   - Re-split 70/15/15 with seed 42
@@ -31,7 +31,7 @@ python3 clean_and_resplit.py \
     --data-dir . \
     --output-dir cleaned_data \
     --blur-threshold 50 \
-    --drop-categories "Frozen Mix Vegetable,Oil,Spices Seasonings and Mixes,Carton of Eggs" \
+    --drop-categories "Frozen Mix Vegetable,Oil,Spices Seasonings and Mixes,Carton of Eggs,Baby Food" \
     --merge "Meat and Poultry - Canned+Seafood - Canned=Canned Protein" \
     --merge "Vegetables - Fresh+Fresh Fruit=Fresh Produce" \
     --split-ratio 0.70 0.15 0.15 \
