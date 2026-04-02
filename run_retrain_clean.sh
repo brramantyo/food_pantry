@@ -42,7 +42,8 @@ echo "============================================"
 
 # Train from scratch (no v9 checkpoint — categories changed)
 python3 train_florence2_v11.py \
-    --jsonl-dir florence2_data_clean \
+    --train-jsonl florence2_data_clean/train.jsonl \
+    --valid-jsonl florence2_data_clean/valid.jsonl \
     --data-dir cleaned_data \
     --output-dir checkpoints_v11_clean \
     --checkpoint none \
@@ -64,6 +65,7 @@ echo "============================================"
 
 python3 evaluate_florence2.py \
     --checkpoint checkpoints_v11_clean/best_model \
+    --base-model microsoft/Florence-2-large-ft \
     --jsonl florence2_data_clean/test.jsonl \
     --data-dir cleaned_data \
     --output eval_results_v11_clean.json \
