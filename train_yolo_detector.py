@@ -115,18 +115,25 @@ def convert_coco_to_yolo(
                     f.write(f"{seq_id} {x_center:.6f} {y_center:.6f} {w_norm:.6f} {h_norm:.6f}\n")
 
 
-def create_data_yaml(output_dir: str, train_images_dir: str, val_images_dir: str, yaml_path: str) -> None:
-    """Create data.yaml for ultralytics."""
+def create_data_yaml(output_dir: str, train_images_dir: str, val_images_dir: str, yaml_path: str, coco_data: Dict) -> None:
+    """Create data.yaml for ultralytics. Read categories from COCO annotations."""
+    # Build category names from COCO data (matching sequential IDs from build_category_mapping)
+    cat_names = []
+    for cat in coco_data["categories"]:
+        cat_name = cat.get("name", "")
+        if cat.get("id") not in EXCLUDED_COCO_IDS and cat_name != DUMMY_CLASS_NAME:
+            cat_names.append(cat_name)
+    
     data = {
         "path": str(Path(output_dir).resolve()),
         "train": str(Path(train_images_dir).resolve()),
         "val": str(Path(val_images_dir).resolve()),
-        "nc": 21,
-        "names": {i: cat for i, cat in enumerate(CATEGORIES)},
+        "nc": len(cat_names),
+        "names": {i: cat for i, cat in enumerate(cat_names)},
     }
     with open(yaml_path, "w") as f:
         yaml.dump(data, f, default_flow_style=False)
-    logger.info(f"Created data.yaml at {yaml_path}")
+    logger.info(f"Created data.yaml at {yaml_path} with {len(cat_names)} categories")
 
 
 def train_yolo(
@@ -272,6 +279,7 @@ def main(
         str(yolo_images_train),
         str(yolo_images_val),
         str(yaml_path),
+        train_coco,
     )
 
     logger.info("Training YOLOv11...")
