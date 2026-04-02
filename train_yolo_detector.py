@@ -19,7 +19,8 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
 # COCO category IDs to exclude
-EXCLUDED_COCO_IDS = {6, 12, 18, 23}
+EXCLUDED_COCO_IDS = set()  # No hardcoded exclusions; cleaned data has correct categories
+DUMMY_CLASS_NAME = "Food-Items-Food-Items-4Fxl"  # Roboflow dummy class to skip
 
 CATEGORIES = [
     "Baby Food",
@@ -54,16 +55,19 @@ def load_coco_annotations(coco_json_path: str) -> Dict:
 
 def build_category_mapping(coco_data: Dict) -> Dict[int, int]:
     """
-    Build mapping from COCO category ID to sequential 0-20 ID.
-    Skip excluded COCO IDs.
+    Build mapping from COCO category ID to sequential 0-N ID.
+    Skip dummy/excluded COCO IDs.
     """
     coco_to_seq = {}
     seq_id = 0
     for cat in coco_data["categories"]:
         coco_id = cat["id"]
-        if coco_id not in EXCLUDED_COCO_IDS:
-            coco_to_seq[coco_id] = seq_id
-            seq_id += 1
+        cat_name = cat.get("name", "")
+        # Skip dummy Roboflow class and any explicitly excluded IDs
+        if coco_id in EXCLUDED_COCO_IDS or cat_name == DUMMY_CLASS_NAME:
+            continue
+        coco_to_seq[coco_id] = seq_id
+        seq_id += 1
     return coco_to_seq
 
 
@@ -218,7 +222,7 @@ def main(
 
     logger.info("Building category mapping...")
     coco_to_seq = build_category_mapping(train_coco)
-    logger.info(f"Mapped {len(coco_to_seq)} COCO categories to 0-20")
+    logger.info(f"Mapped {len(coco_to_seq)} COCO categories to 0-{len(coco_to_seq)-1}")
 
     # YOLO expects: dataset_root/images/train/, dataset_root/labels/train/
     # It auto-maps images↔labels by replacing /images/ with /labels/ in path

@@ -30,6 +30,13 @@ if [ ! -d "florence2_data_clean" ]; then
     echo ""
 fi
 
+# Create v5 symlinks (training scripts expect train_v5.jsonl)
+cd florence2_data_clean
+ln -sf train.jsonl train_v5.jsonl 2>/dev/null
+ln -sf valid.jsonl valid_v5.jsonl 2>/dev/null
+ln -sf test.jsonl test_v5.jsonl 2>/dev/null
+cd ~/food_pantry
+
 echo "Data check:"
 wc -l florence2_data_clean/*.jsonl 2>/dev/null
 echo ""
